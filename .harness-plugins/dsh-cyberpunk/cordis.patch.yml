@@ -1,0 +1,3 @@
+- insert:
+    - id: cyberpunk-theme
+      name: '@local/dsh-cyberpunk'

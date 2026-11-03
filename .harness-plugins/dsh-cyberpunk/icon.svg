@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Cyberpunk work style">
+  <defs>
+    <linearGradient id="cyber-neon" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#00fff7"/>
+      <stop offset="0.55" stop-color="#4d7cff"/>
+      <stop offset="1" stop-color="#ff2a6d"/>
+    </linearGradient>
+    <radialGradient id="cyber-glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#00fff7" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#00fff7" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="64" height="64" rx="10" fill="#05060d"/>
+  <circle cx="32" cy="32" r="24" fill="url(#cyber-glow)"/>
+  <path d="M32 9 50 19.5v25L32 55 14 44.5v-25z" fill="none" stroke="url(#cyber-neon)" stroke-width="2.5" stroke-linejoin="round"/>
+  <path d="M24 24h10l6 8-6 8H24" fill="none" stroke="#e6feff" stroke-width="2.5" stroke-linecap="square" stroke-linejoin="miter"/>
+  <path d="M24 44.5V24M40 40v10" stroke="#00fff7" stroke-width="1.5" stroke-linecap="square" opacity="0.85"/>
+  <circle cx="40" cy="24" r="2.2" fill="#ff2a6d"/>
+  <circle cx="24" cy="47" r="1.6" fill="#00fff7" opacity="0.9"/>
+</svg>

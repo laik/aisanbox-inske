@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>多租户 AI Sandbox · POC 一页看懂</title>
+<meta name="description" content="四个开源组件串成一条链：租户开通 → agent 运行 → 越界拦截 → 全程可查。kind × 2 实测结果。">
+<style>
+:root{
+  --paper:#FBFAF7; --card:#FFFFFF; --sunk:#F2F1EC;
+  --ink:#15181B; --muted:#5C646C; --faint:#8B9199;
+  --line:#E3E2DC; --line-strong:#CFCEC6;
+  --accent:#0B5A69; --accent-ink:#08414C; --accent-soft:#E8F2F3;
+  --ok:#1C6B48; --ok-soft:#E8F2EB;
+  --warn:#8A5300; --warn-soft:#FBF1E1;
+  --bad:#9C3A29; --bad-soft:#F9EAE7;
+  --body:"PingFang SC","Hiragino Sans GB","Noto Sans SC","Microsoft YaHei",-apple-system,BlinkMacSystemFont,"Helvetica Neue",sans-serif;
+  --display:"Songti SC","Noto Serif SC",Georgia,"Times New Roman",serif;
+  --mono:"SF Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --paper:#0F1214; --card:#161A1D; --sunk:#1C2125;
+    --ink:#E9ECEC; --muted:#A2ABB1; --faint:#7C858B;
+    --line:#282E33; --line-strong:#3A4248;
+    --accent:#7CC0CB; --accent-ink:#A8DCE4; --accent-soft:#132A2F;
+    --ok:#7BC49B; --ok-soft:#13271C;
+    --warn:#DFAE63; --warn-soft:#2A2012;
+    --bad:#E2907F; --bad-soft:#2C1915;
+    color-scheme:dark;
+  }
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--body);
+  font-size:16px;line-height:1.72;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+.wrap{max-width:1000px;margin:0 auto;padding:0 clamp(18px,4vw,40px)}
+.duo>*,.panels>*,.flow>*,.layer>*,.row>*,.step>*,.spine>*,.card,.cb,.panel,pre{min-width:0}
+pre{max-width:100%}
+::selection{background:var(--accent-soft);color:var(--accent-ink)}
+
+/* ---------- top bar ---------- */
+.top{position:sticky;top:0;z-index:20;background:var(--paper);background:color-mix(in srgb,var(--paper) 88%,transparent);
+  backdrop-filter:saturate(1.4) blur(10px);border-bottom:1px solid var(--line)}
+.top .wrap{display:flex;align-items:center;gap:20px;height:52px}
+.brand{display:flex;align-items:center;gap:9px;font-weight:600;font-size:14px;letter-spacing:.01em;white-space:nowrap}
+.brand .dot{width:18px;height:18px;border-radius:5px;background:var(--accent);position:relative;flex:none}
+.brand .dot::after{content:"";position:absolute;inset:5px;border-radius:2px;background:var(--paper)}
+.nav{display:flex;gap:2px;margin-left:auto;overflow-x:auto;scrollbar-width:none}
+.nav::-webkit-scrollbar{display:none}
+.nav a{font-size:13px;color:var(--muted);text-decoration:none;padding:5px 9px;border-radius:5px;white-space:nowrap}
+.nav a:hover{color:var(--accent);background:var(--accent-soft)}
+.nav a:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+
+/* ---------- hero ---------- */
+.hero{padding:clamp(44px,7vw,84px) 0 clamp(30px,4vw,44px)}
+.kicker{font-family:var(--mono);font-size:11.5px;letter-spacing:.13em;text-transform:uppercase;
+  color:var(--muted);margin:0 0 18px;display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center}
+.kicker .sep{width:4px;height:4px;border-radius:50%;background:var(--line-strong)}
+h1{font-family:var(--display);font-weight:600;font-size:clamp(34px,6vw,58px);line-height:1.18;
+  letter-spacing:.005em;margin:0 0 20px;max-width:20ch;text-wrap:balance}
+h1 em{font-style:normal;color:var(--accent);position:relative;white-space:nowrap}
+h1 em::after{content:"";position:absolute;left:0;right:0;bottom:.06em;height:.14em;
+  background:var(--accent);opacity:.16;border-radius:2px}
+.sub{font-size:clamp(16px,2.1vw,18.5px);color:var(--muted);max-width:56ch;margin:0}
+.sub b{color:var(--ink);font-weight:600}
+
+/* verdict cards */
+.verdicts{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:34px}
+.vd{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:15px 16px 14px}
+.vd .k{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint)}
+.vd .v{font-size:clamp(22px,3vw,27px);font-weight:600;letter-spacing:-.01em;margin:6px 0 2px;line-height:1.2}
+.vd .v small{font-size:.55em;font-weight:500;color:var(--muted);margin-left:2px}
+.vd .d{font-size:13px;color:var(--muted);line-height:1.6;margin:6px 0 0}
+.vd.ok .v{color:var(--ok)}
+
+/* ---------- sections ---------- */
+section{padding:clamp(34px,4.6vw,56px) 0;border-top:1px solid var(--line);scroll-margin-top:64px}
+.sec-head{display:flex;align-items:baseline;gap:12px;margin-bottom:8px}
+.sec-no{font-family:var(--mono);font-size:11.5px;color:var(--accent);letter-spacing:.08em;padding-top:5px}
+h2{font-size:clamp(23px,3.4vw,31px);line-height:1.35;font-weight:600;letter-spacing:-.005em;margin:0;text-wrap:balance}
+.lede{color:var(--muted);max-width:62ch;margin:10px 0 26px;font-size:15.5px}
+.lede b{color:var(--ink)}
+p{margin:0 0 14px}
+code{font-family:var(--mono);font-size:.86em;background:var(--sunk);padding:.14em .4em;border-radius:4px;
+  color:var(--ink);word-break:break-word;border:1px solid color-mix(in srgb,var(--line) 60%,transparent)}
+a{color:var(--accent)}
+
+/* ---------- layer stack ---------- */
+.stack{position:relative;display:grid;gap:10px}
+.layer{display:grid;grid-template-columns:52px minmax(0,1fr) auto;gap:16px;align-items:center;
+  background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px;
+  transition:border-color .15s,transform .15s}
+.layer:hover{border-color:var(--line-strong)}
+.layer .no{font-family:var(--mono);font-size:12px;color:var(--faint);letter-spacing:.06em}
+.layer h3{margin:0 0 3px;font-size:16.5px;font-weight:600;letter-spacing:.01em}
+.layer h3 .ver{font-family:var(--mono);font-size:10.5px;color:var(--faint);font-weight:400;margin-left:7px;letter-spacing:.02em}
+.layer .role{margin:0;font-size:14.5px;color:var(--muted);line-height:1.6}
+.layer .role b{color:var(--ink);font-weight:600}
+.layer .ev{font-family:var(--mono);font-size:11.5px;color:var(--accent-ink);background:var(--accent-soft);
+  border-radius:6px;padding:6px 10px;line-height:1.5;max-width:280px;text-align:left}
+.layer .ev b{font-weight:600}
+
+.spine{margin:18px 0 0;display:flex;gap:10px;align-items:flex-start;font-size:14px;color:var(--muted);
+  background:var(--sunk);border-radius:10px;padding:13px 16px;line-height:1.65}
+.spine .tag{flex:0 0 auto;font-family:var(--mono);font-size:10.5px;background:var(--accent-soft);
+  border:1px solid transparent;border-radius:5px;padding:3px 8px;white-space:nowrap;
+  color:var(--accent-ink);margin-top:2px}
+.spine b{color:var(--ink)}
+
+/* ---------- wiring flow ---------- */
+.flow{display:grid;grid-template-columns:1fr auto 1fr auto 1fr;gap:10px;align-items:stretch;margin:4px 0 22px}
+.node{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:13px 14px}
+.node .n{font-family:var(--mono);font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--faint)}
+.node p{margin:5px 0 0;font-size:13.5px;line-height:1.55;color:var(--muted)}
+.node b{color:var(--ink);font-weight:600}
+.arrow{display:grid;place-items:center;color:var(--line-strong);font-size:18px;font-family:var(--mono)}
+
+/* ---------- code ---------- */
+.cb{position:relative;margin:0 0 16px}
+pre{margin:0;background:var(--card);border:1px solid var(--line);border-radius:10px;
+  padding:14px 16px;overflow-x:auto;font-family:var(--mono);font-size:12.8px;line-height:1.65;color:var(--ink)}
+pre .c{color:var(--faint)}
+pre .k{color:var(--accent)}
+pre .hl{background:var(--accent-soft);border-radius:3px;padding:0 3px}
+.copy{position:absolute;top:8px;right:8px;font-family:var(--mono);font-size:10.5px;letter-spacing:.05em;
+  border:1px solid var(--line-strong);background:var(--paper);color:var(--muted);border-radius:5px;
+  padding:4px 8px;cursor:pointer;opacity:0;transition:opacity .15s}
+.cb:hover .copy,.copy:focus-visible{opacity:1}
+.copy:hover{color:var(--accent);border-color:var(--accent)}
+
+/* ---------- charts ---------- */
+.chart{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:20px 22px 18px;margin-bottom:14px}
+.chart h4{margin:0 0 2px;font-size:14px;font-weight:600;letter-spacing:.02em}
+.chart .cap{margin:0 0 16px;font-size:12.5px;color:var(--faint)}
+.row{display:grid;grid-template-columns:minmax(120px,168px) minmax(0,1fr) 74px;gap:14px;align-items:center;
+  padding:7px 0}
+.row .nm{font-size:13.5px;color:var(--muted);line-height:1.4}
+.row .nm b{color:var(--ink);font-weight:600;display:block;font-size:13.5px}
+.track{height:12px;background:var(--sunk);border-radius:99px;overflow:hidden;position:relative}
+.track i{display:block;height:100%;width:var(--w,10%);min-width:3px;border-radius:99px;
+  background:var(--accent);opacity:.85}
+.track i.warm{background:var(--ok)}
+.track i.bad{background:var(--warn);opacity:.6}
+.row .val{font-family:var(--mono);font-size:13px;text-align:right;color:var(--ink);font-variant-numeric:tabular-nums}
+.legend{display:flex;gap:16px;font-size:12px;color:var(--faint);margin-top:12px;flex-wrap:wrap}
+.legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:0}
+
+/* ---------- two-up cards ---------- */
+.duo{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px}
+.card h4{margin:0 0 3px;font-size:14.5px;font-weight:600}
+.card .m{font-size:12px;color:var(--faint);margin:0 0 12px}
+.card pre{background:var(--sunk);border:none;padding:12px 13px;font-size:12.2px}
+.hits{list-style:none;margin:0;padding:0}
+.hits li{display:flex;justify-content:space-between;gap:12px;padding:7px 0;border-bottom:1px dashed var(--line);
+  font-size:13px;align-items:baseline}
+.hits li:last-child{border-bottom:none}
+.hits .what{color:var(--ink)}
+.hits .what code{font-size:11.5px;background:none;border:none;padding:0;color:var(--accent)}
+.hits .arg{font-family:var(--mono);font-size:11.5px;color:var(--faint);text-align:right;white-space:nowrap}
+.tip{margin-top:16px;display:flex;gap:10px;font-size:13.5px;color:var(--muted);line-height:1.65;
+  border-left:2px solid var(--accent);padding:2px 0 2px 14px}
+.tip b{color:var(--ink)}
+
+/* ---------- status grids ---------- */
+.panels{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start}
+.panel{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px}
+.panel .ph{display:flex;align-items:center;gap:8px;margin-bottom:12px}
+.panel .ph h4{margin:0;font-size:14.5px;font-weight:600}
+.chip{font-family:var(--mono);font-size:10.5px;letter-spacing:.05em;border-radius:5px;padding:2px 7px;white-space:nowrap}
+.chip.ok{background:var(--ok-soft);color:var(--ok)}
+.chip.warn{background:var(--warn-soft);color:var(--warn)}
+.chip.bad{background:var(--bad-soft);color:var(--bad)}
+.chip.info{background:var(--accent-soft);color:var(--accent-ink)}
+.check{list-style:none;margin:0;padding:0;font-size:13.5px;line-height:1.6}
+.check li{position:relative;padding-left:22px;margin-bottom:9px;color:var(--muted)}
+.check li b{color:var(--ink);font-weight:600}
+.check li::before{position:absolute;left:0;top:0;font-family:var(--mono);font-size:12px}
+.check.yes li::before{content:"✓";color:var(--ok)}
+.check.no li::before{content:"!";color:var(--warn);font-weight:700}
+.check.no li small{display:block;color:var(--faint);font-size:12.5px;margin-top:1px}
+.check li .rec{display:block;color:var(--accent-ink);font-size:12.5px;margin-top:2px}
+
+/* ---------- steps ---------- */
+.steps{counter-reset:s;display:grid;gap:12px;margin:0}
+.step{display:grid;grid-template-columns:30px minmax(0,1fr);gap:14px;align-items:start}
+.step::before{counter-increment:s;content:counter(s);font-family:var(--mono);font-size:12px;color:var(--accent);
+  border:1px solid var(--line-strong);background:var(--card);border-radius:50%;width:26px;height:26px;
+  display:grid;place-items:center;margin-top:11px}
+.step .t{font-size:13.5px;margin:0 0 7px;color:var(--muted)}
+.step .t b{color:var(--ink)}
+
+/* ---------- files / footer ---------- */
+.tree{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:6px 18px;margin:0}
+.tree .tr{display:grid;grid-template-columns:minmax(130px,168px) minmax(0,1fr);gap:12px;
+  align-items:baseline;padding:7px 0;border-bottom:1px dashed var(--line)}
+.tree .tr:last-child{border-bottom:none}
+.tree code{font-family:var(--mono);font-size:12.5px;background:none;border:none;padding:0;color:var(--ink)}
+.tree span{color:var(--muted);font-size:13px}
+.foot{border-top:1px solid var(--line);padding:30px 0 60px;font-size:13px;color:var(--faint);line-height:1.8}
+.links{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:16px}
+.links a{display:inline-flex;align-items:center;gap:7px;text-decoration:none;color:var(--ink);
+  border:1px solid var(--line-strong);background:var(--card);border-radius:8px;padding:8px 12px;font-size:13px}
+.links a:hover{border-color:var(--accent);color:var(--accent)}
+.links a span{color:var(--faint);font-family:var(--mono);font-size:11px}
+.foot b{color:var(--muted);font-weight:500}
+
+@media (max-width:860px){
+  .verdicts{grid-template-columns:1fr;gap:8px}
+  .layer{grid-template-columns:34px minmax(0,1fr);row-gap:10px}
+  .layer .ev{grid-column:2;max-width:none}
+  .duo,.panels{grid-template-columns:1fr}
+  .flow{grid-template-columns:1fr}
+  .arrow{transform:rotate(90deg);padding:2px 0}
+  .tree .tr{grid-template-columns:1fr;gap:1px;padding:8px 0}
+  .spine{flex-direction:column;align-items:flex-start;gap:8px}
+  .row{grid-template-columns:minmax(0,1fr) 64px;row-gap:5px}
+  .row .track{grid-column:1 / -1;grid-row:2}
+  .row .val{grid-row:1;grid-column:2}
+}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}*{transition:none!important}}
+@media print{
+  .top,.copy{display:none!important}
+  .track i,.vd,.chip,.layer,.card,.panel,.chart,.tree,.check li::before{
+    -webkit-print-color-adjust:exact;print-color-adjust:exact}
+  body{background:#fff;font-size:11pt}
+  section{break-inside:avoid;page-break-inside:avoid;padding:18px 0}
+  .layer,.card,.panel,.chart,pre{break-inside:avoid}
+  a{color:inherit;text-decoration:none}
+}
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <div class="brand"><span class="dot" aria-hidden="true"></span>POC 一页看懂</div>
+    <nav class="nav" aria-label="页内导航">
+      <a href="#layers">四层</a>
+      <a href="#wire">接线</a>
+      <a href="#speed">速度</a>
+      <a href="#seen">看到什么</a>
+      <a href="#status">能用的 / 缺的</a>
+      <a href="#start">上手</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <div class="hero">
+    <p class="kicker">
+      <span>POC 实测结果</span><span class="sep"></span>
+      <span>2026-11-03</span><span class="sep"></span>
+      <span>kind × 2 · Kubernetes v1.37</span><span class="sep"></span>
+      <span>macOS / Docker Desktop</span>
+    </p>
+    <h1>一个租户一个沙箱，<br><em>管得住，也看得见</em></h1>
+    <p class="sub">四个开源组件已经串成一条链：<b>开通租户 → agent 跑起来 → 越界被拦 → 事后能查</b>。中间只接了一根线，不用改你现有的租户流程。</p>
+
+    <div class="verdicts">
+      <div class="vd ok">
+        <div class="k">结论一</div>
+        <div class="v">跑通了</div>
+        <div class="d">从建租户到 agent 执行命令，端到端实测，不是方案拼图。</div>
+      </div>
+      <div class="vd">
+        <div class="k">结论二</div>
+        <div class="v">0.25<small>s</small></div>
+        <div class="d">从预热池领一个沙箱到就绪；同环境下冷启动要 16 秒。</div>
+      </div>
+      <div class="vd">
+        <div class="k">结论三</div>
+        <div class="v">1<small>处</small></div>
+        <div class="d">唯一的自研接线：<code>workspace_mode=operator</code> + 一个标签。</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 01 -->
+  <section id="layers">
+    <div class="sec-head"><span class="sec-no">01</span><h2>四层，各管一段</h2></div>
+    <p class="lede">每一层只解决一个问题，组合起来才是"能放心跑 AI 代码"的环境。没有重复造轮子，每层都附了实测证据。</p>
+
+    <div class="stack">
+      <article class="layer">
+        <div class="no">01</div>
+        <div>
+          <h3>Capsule 租户合同<span class="ver">0.15.2</span></h3>
+          <p class="role"><b>决定谁住哪里：</b>命名空间归谁、能用多少 CPU 内存、最多建几个 ns。像物业——分房、抄表、定水电上限。</p>
+        </div>
+        <div class="ev">{<b>超配额直接被拒</b><br>exceeded quota: capsule-globex-0}</div>
+      </article>
+
+      <article class="layer">
+        <div class="no">02</div>
+        <div>
+          <h3>agent-sandbox 沙箱本体<span class="ver">v1.0.9</span></h3>
+          <p class="role"><b>提供那间房：</b>稳定身份、可长期存东西的工作盘、休眠、预热池。像房间——有门牌、有储物柜，还能提前备好空房。</p>
+        </div>
+        <div class="ev">认领预热池 → <b>0.25 s</b> 就绪</div>
+      </article>
+
+      <article class="layer">
+        <div class="no">03</div>
+        <div>
+          <h3>OpenShell 行为边界<span class="ver">0.1.4</span></h3>
+          <p class="role"><b>决定它能碰什么：</b>哪些文件、哪些出网地址、哪个凭据，以及<em style="font-style:normal">为什么</em>放行或拒绝。像门禁——谁能进哪扇门，谁批的条子。</p>
+        </div>
+        <div class="ev">策略热更新 v1→v2，<b>无需重启</b>沙箱</div>
+      </article>
+
+      <article class="layer">
+        <div class="no">04</div>
+        <div>
+          <h3>Tetragon 真相与拦截<span class="ver">1.8.0</span></h3>
+          <p class="role"><b>记录真实发生的事：</b>agent 在内核里到底碰了什么、想连哪里，并能在当场拒绝。像走廊摄像头加紧急制动。</p>
+        </div>
+        <div class="ev">越界后 agent <b>0.11 s</b> 收到 PermissionError</div>
+      </article>
+    </div>
+
+    <p class="spine">
+      <span class="tag">projectcapsule.dev/tenant=acme</span>
+      <span>四层用<b>同一个租户标签</b>对齐：配额、网络策略、审计记录都能按这一个键聚合。这是这套组合最值钱的性质——身份贯穿始终，不需要另建映射表。</span>
+    </p>
+  </section>
+
+  <!-- 02 -->
+  <section id="wire">
+    <div class="sec-head"><span class="sec-no">02</span><h2>只需要接一根线</h2></div>
+    <p class="lede">OpenShell 默认自己建命名空间。你已经有 Capsule 的租户体系，所以换成 <b>operator 模式</b>：平台建 ns 并打一个标签，OpenShell 按标签认领，租户流程一点不用动。</p>
+
+    <div class="flow" aria-label="接线流程">
+      <div class="node"><div class="n">① 平台</div><p><b>Tenant</b> 声明租户，顺带给它所有 ns 打标签 <code>openshell.ai/workspace=true</code></p></div>
+      <div class="arrow" aria-hidden="true">→</div>
+      <div class="node"><div class="n">② 租户</div><p>owner 自己建 ns，<b>Capsule webhook</b> 注入配额、LimitRange、默认网络策略</p></div>
+      <div class="arrow" aria-hidden="true">→</div>
+      <div class="node"><div class="n">③ 网关</div><p><b>OpenShell</b> 按标签发现 ns 并接管，日志确认 <code>total=2</code></p></div>
+    </div>
+
+    <div class="duo">
+      <div class="cb"><button class="copy" type="button">复制</button><pre><span class="c"># capsule/tenants.yaml — 租户侧：打标签</span>
+<span class="k">spec</span>:
+  namespaceOptions:
+    additionalMetadata:
+      labels: {openshell.ai/workspace: "true"}</pre></div>
+      <div class="cb"><button class="copy" type="button">复制</button><pre><span class="c"># openshell/values-plane-a.yaml — 控制面：认领</span>
+<span class="k">server</span>:
+  drivers:
+    kubernetes:
+      workspaceMode: operator
+      operatorNamespaceLabel: "openshell.ai/workspace=true"</pre></div>
+    </div>
+    <p class="tip"><span><b>实测接管日志：</b><code>operator namespace allowlist replaced from full relist total=2</code>。之后 <code>openshell sandbox create</code> 就会在这个 ns 里落下 Sandbox CR + agent 容器 + supervisor 容器。</span></p>
+  </section>
+
+  <!-- 03 -->
+  <section id="speed">
+    <div class="sec-head"><span class="sec-no">03</span><h2>两组对比，看清快慢</h2></div>
+    <p class="lede">同一集群、同一个 agent 镜像，差别只在“沙箱从哪来”：预热池拿现成的，冷启动从零拉起；第三行还叠加了拉镜像的时间，这才是多数真实场景。</p>
+
+    <div class="chart">
+      <h4>一个沙箱从零到"可执行命令"</h4>
+      <p class="cap">单位：秒｜同一节点、同镜像｜左端越短越好</p>
+      <div class="row"><div class="nm"><b>预热池认领</b>直接拿现成沙箱</div><div class="track"><i class="warm" style="--w:1.6%"></i></div><div class="val">0.25 s</div></div>
+      <div class="row"><div class="nm"><b>冷启动</b>镜像已在节点</div><div class="track"><i style="--w:5.8%"></i></div><div class="val">0.92 s</div></div>
+      <div class="row"><div class="nm"><b>冷启动</b>要拉 20 MB 镜像</div><div class="track"><i class="bad" style="--w:100%"></i></div><div class="val">15.98 s</div></div>
+      <div class="legend"><span><i style="background:var(--ok)"></i>预热池</span><span><i style="background:var(--accent)"></i>冷启动·镜像已缓存</span><span><i style="background:var(--warn)"></i>冷启动·要拉镜像</span></div>
+    </div>
+
+    <div class="chart">
+      <h4>拦掉同一个出网地址，agent 多久能知道</h4>
+      <p class="cap">同样是"拒绝"，agent 侧的体验差 50 倍</p>
+      <div class="row"><div class="nm"><b>NetworkPolicy</b>连接超时，撑爆重试逻辑</div><div class="track"><i class="bad" style="--w:100%"></i></div><div class="val">~6.0 s</div></div>
+      <div class="row"><div class="nm"><b>Tetragon 内核拦截</b>立刻报错，可改道</div><div class="track"><i class="warm" style="--w:1.8%"></i></div><div class="val">0.11 s</div></div>
+      <div class="legend"><span>NetworkPolicy 超时是"挂住"；Tetragon 是"当场失败"——对 agent 来说后者好处理得多，还能细到"哪个程序连哪个地址"。</span></div>
+    </div>
+  </section>
+
+  <!-- 04 -->
+  <section id="seen">
+    <div class="sec-head"><span class="sec-no">04</span><h2>agent 到底做了什么</h2></div>
+    <p class="lede">Tetragon 在内核层记录每一次尝试，事件自带租户、命名空间、容器和二进制名，不需要你另建映射表。</p>
+
+    <div class="duo">
+      <div class="card">
+        <h4>它连了谁</h4>
+        <p class="m">实测输出（compact 模式）</p>
+        <pre><span class="c"># 被拦掉了，但依然被记录</span>
+agent:egress-external  daddr=1.1.1.1:53
+agent:egress-external  daddr=142.1.1.1:80
+<span class="c"># 正常的集群内访问</span>
+agent:in-cluster       daddr=10.96.0.10:53
+<span class="c"># agent 自己起了服务 = 暴露面变化</span>
+agent:listen           saddr=0.0.0.0:31339</pre>
+      </div>
+      <div class="card">
+        <h4>它干了什么</h4>
+        <p class="m">POC 里真实命中的策略</p>
+        <ul class="hits">
+          <li><span class="what">读配置 / 凭据 <code>open-sensitive</code></span><span class="arg">/etc/hosts</span></li>
+          <li><span class="what">删除文件 <code>file-delete</code></span><span class="arg">/tmp/x1</span></li>
+          <li><span class="what">起 shell <code>risky-exec</code></span><span class="arg">python3 → /bin/sh</span></li>
+          <li><span class="what">装包 <code>package-manager</code></span><span class="arg">/usr/local/bin/pip</span></li>
+          <li><span class="what">改运行身份 <code>setuid-attempt</code></span><span class="arg">uid 0（噪声高）</span></li>
+        </ul>
+      </div>
+    </div>
+
+    <p class="tip"><span><b>Tetragon 记的是"尝试"，策略决定"成不成功"。</b>NetworkPolicy 和 OpenShell 只管放行与否，所以"agent 试过连哪儿"只有这一层看得到。再配上 OpenShell 的策略版本与判定（<code>DENIED … engine:opa</code>），才知道"连没连上"和"是谁放的"。</span></p>
+  </section>
+
+  <!-- 05 -->
+  <section id="status">
+    <div class="sec-head"><span class="sec-no">05</span><h2>现在能用的，和还不能用的</h2></div>
+    <p class="lede">下面这些不是设计意图，是这次实测的结论。绿勾都有命令输出，黄标都写清了缺什么、怎么补。</p>
+
+    <div class="panels">
+      <div class="panel">
+        <div class="ph"><span class="chip ok">已验证</span><h4>可以直接往前走</h4></div>
+        <ul class="check yes">
+          <li><b>端到端：</b>一条命令建沙箱，agent 以 uid 10001 非 root 运行</li>
+          <li><b>配额真拦：</b>超限被拒，删除沙箱后用量回落</li>
+          <li><b>网络边界：</b>agent 连 apiserver / gateway 超时，只留 supervisor:5500</li>
+          <li><b>预热池：</b>0.25 s 到就绪</li>
+          <li><b>观测：</b>每条事件带租户 / 命名空间 / 二进制</li>
+          <li><b>内核强制：</b>指定解释器被拒（<code>pip: Operation not permitted</code>），python 不受影响</li>
+          <li><b>策略下发：</b>Capsule 自动把策略放进租户 ns（<code>gtr READY=True</code>）</li>
+          <li><b>跨集群：</b>平台集群抓租户集群三处指标，全部 <code>up</code></li>
+          <li><b>可移植：</b>同一份 <code>tenants.yaml</code> 在第二个集群复现</li>
+        </ul>
+      </div>
+
+      <div class="panel">
+        <div class="ph"><span class="chip warn">还没搞定</span><h4>上线前必须处理</h4></div>
+        <ul class="check no">
+          <li><b>沙箱 DNS 没走 supervisor</b> <small>沙箱解析走集群 CoreDNS，L7 出网策略的"代理 403"路径拿不到。</small><span class="rec">→ 先在自己的环境复验这一段</span></li>
+          <li><b>runtimeClasses 白名单没拦住</b> <small>Capsule 0.15 里 owner 用 kata 仍被接受，到 kubelet 才失败。</small><span class="rec">→ 需要补一层 CEL / Kyverno 校验</span></li>
+          <li><b>预热池的沙箱没有策略边界</b> <small>池里领出来的沙箱不带 OpenShell supervisor 与凭据注入。</small><span class="rec">→ 低延迟和"有策略"目前二选一</span></li>
+          <li><b>没有 hypervisor 级隔离</b> <small>kind 没有 gVisor 节点镜像；现有强度来自非 root + seccomp + NP + supervisor。</small><span class="rec">→ 跑不可信代码前要上 gVisor / Kata</span></li>
+          <li><b>单副本 + SQLite</b> <small>网关默认部署只够 POC；多集群要每集群一套 gateway。</small><span class="rec">→ 生产换 deployment + 外部 PostgreSQL</span></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- 06 -->
+  <section id="start">
+    <div class="sec-head"><span class="sec-no">06</span><h2>三步复现</h2></div>
+    <p class="lede">前提：Docker 至少 8 GiB（两个 kind 集群常驻约 2.5–3 GiB）、已装 kind / kubectl / helm，内核有 BTF（Docker Desktop 6.12 满足）。</p>
+
+    <div class="steps">
+      <div class="step">
+        <div style="width:100%">
+          <p class="t"><b>重建整个环境</b>——两个集群加全部组件，约 10 分钟</p>
+          <div class="cb"><button class="copy" type="button">复制</button><pre>bash poc/scripts/bootstrap.sh</pre></div>
+        </div>
+      </div>
+      <div class="step">
+        <div style="width:100%">
+          <p class="t"><b>给一个租户开通 sandbox</b>——5 个动作全在脚本里，不用逐项配</p>
+          <div class="cb"><button class="copy" type="button">复制</button><pre>bash poc/usage/01-onboard-tenant.sh acme</pre></div>
+        </div>
+      </div>
+      <div class="step">
+        <div style="width:100%">
+          <p class="t"><b>用起来</b>——建沙箱、看日志、查当前策略</p>
+          <div class="cb"><button class="copy" type="button">复制</button><pre>openshell workspace create --name acme
+openshell --workspace acme sandbox create --name try1 \
+  --cpu 200m --memory 256Mi -- python3 -u agent.py
+openshell --workspace acme policy get try1   <span class="c"># 生效策略 + hash + 版本</span></pre></div>
+        </div>
+      </div>
+    </div>
+
+    <p style="margin:26px 0 10px;font-size:13.5px;color:var(--muted)">目录长这样：</p>
+<div class="tree">
+      <div class="tr"><code>kind/</code><span>两个集群的配置</span></div>
+      <div class="tr"><code>capsule/</code><span>租户 / owner / 策略自动下发</span></div>
+      <div class="tr"><code>openshell/</code><span>operator 模式接线（本页 §02）</span></div>
+      <div class="tr"><code>agent-sandbox/</code><span>预热池 + 认领</span></div>
+      <div class="tr"><code>tetragon/</code><span>policies/ 策略基线（已验证）· experiments/ 证据</span></div>
+      <div class="tr"><code>observability/</code><span>跨集群抓取配置</span></div>
+      <div class="tr"><code>usage/</code><span>开通脚本 · 观测手册</span></div>
+      <div class="tr"><code>scripts/</code><span>bootstrap.sh · bench-latency.py</span></div>
+      <div class="tr"><code>docs/</code><span>index.html（本页）· SUMMARY.md · architecture.html · FINDINGS.md</span></div>
+    </div>
+  </section>
+
+  <div class="foot">
+    <div class="links">
+      <a href="SUMMARY.md">文字简版 <span>SUMMARY.md</span></a>
+      <a href="architecture.html">详细架构与配置 <span>architecture.html</span></a>
+      <a href="FINDINGS.md">逐项验证记录与踩坑 <span>FINDINGS.md</span></a>
+      <a href="../usage/02-agent-visibility.md">观测手册 <span>usage/</span></a>
+    </div>
+    <p>环境：kind 0.33 × 2 · Kubernetes v1.37.0 · Capsule 0.15.2 · agent-sandbox v1.0.9 · OpenShell 0.1.4 · Tetragon 1.8.0<br>
+    主机：macOS · Docker Desktop 29.2.1 / 内核 6.12.72 · 8C / 8G。所有"已验证"结论都有对应命令输出；未验证项在 §05 写明了现象与原因。</p>
+  </div>
+
+</main>
+
+<script>
+document.querySelectorAll('.copy').forEach(function(btn){
+  btn.addEventListener('click', function(){
+    var pre = btn.parentElement.querySelector('pre');
+    if(!pre) return;
+    var text = pre.innerText;
+    var old = btn.textContent;
+    var done = function(t){ btn.textContent = t; setTimeout(function(){ btn.textContent = old; }, 1400); };
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(function(){ done('已复制'); }, fallback);
+    } else { fallback(); }
+    function fallback(){
+      var r = document.createRange(); r.selectNodeContents(pre);
+      var s = getSelection(); s.removeAllRanges(); s.addRange(r);
+      try { document.execCommand('copy'); done('已复制'); }
+      catch(e){ done('已选中'); }
+    }
+  });
+});
+</script>
+</body>
+</html>

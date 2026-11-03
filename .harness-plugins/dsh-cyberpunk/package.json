@@ -1,0 +1,28 @@
+{
+  "name": "@local/dsh-cyberpunk",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Cyberpunk work style for the DeepSeek Harness Web UI: neon token layer, monospace type, CRT scanlines and a composer status line",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "immediately": true
+    }
+  }
+}

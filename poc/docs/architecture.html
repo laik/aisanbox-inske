@@ -1,5 +1,11 @@
-<meta name="claude:viewport-fit-sides" content="cover">
-<title>多租户 AI Sandbox 架构</title>
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>多租户 AI Sandbox · 详细架构与配置</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <style>
 /* 设计计划 — 冷灰蓝的中性色，深青蓝作为唯一强调色；
@@ -116,7 +122,17 @@ table code{font-size:12px}
 /* diagram */
 .diagram{border:1px solid var(--line);border-radius:5px;background:var(--surface);padding:12px;
   overflow-x:auto;margin:0 0 26px}
-.mermaid{min-width:540px;font-size:13px}
+.layers{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.lay{border:1px solid var(--line);border-radius:5px;padding:12px 13px;background:var(--bg)}
+.lay .h{font-family:var(--mono);font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+.lay b{display:block;font-size:14px;line-height:1.4;margin-bottom:5px}
+.lay span{display:block;font-size:12.5px;line-height:1.55;color:var(--muted)}
+.lay-cap{font-size:12.5px;color:var(--muted);margin:12px 2px 0;max-width:82ch;line-height:1.7}
+.lay-cap code{font-size:11.5px}
+.back{margin:0 0 16px;font-family:var(--mono);font-size:11.5px;letter-spacing:.04em}
+.back a{color:var(--muted);text-decoration:none;border:1px solid var(--line);border-radius:3px;padding:4px 8px}
+.back a:hover{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
+@media (max-width:760px){.layers{grid-template-columns:1fr 1fr}}
 
 /* rule cards (numbered gotchas) */
 .rule{border:1px solid var(--line);border-radius:5px;background:var(--surface);padding:14px 16px;margin-bottom:12px}
@@ -133,11 +149,14 @@ footer{margin-top:64px;padding-top:20px;border-top:1px solid var(--line);
 }
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 </style>
+</head>
+<body>
 
 <div class="wrap">
 
 <header>
-  <div class="eyebrow">平台设计 · 已在 kind×2 / K8s v1.37 实测</div>
+  <p class="back"><a href="index.html">← 返回「一页看懂」</a></p>
+  <div class="eyebrow">详细版 · 平台设计 · 已在 kind×2 / K8s v1.37 实测</div>
   <h1>多租户 AI Sandbox</h1>
   <p class="thesis">Capsule 与 OpenShell 之间已经有一条官方接缝，不需要自己造：<b><code>workspace_mode&nbsp;=&nbsp;operator</code></b>。
     接上之后，同一个租户标签贯穿配额、网络边界、执行策略与内核审计，agent 的每一次访问都能归到"哪个租户、哪个 agent、做了什么"。</p>
@@ -149,38 +168,20 @@ footer{margin-top:64px;padding-top:20px;border-top:1px solid var(--line);
 
 <nav>
   <div class="wrap">
-    <a href="#arch">分层</a><a href="#seam">接缝</a><a href="#anatomy">沙箱形态</a><a href="#usage">使用样例</a>
-    <a href="#observe">访问了谁</a><a href="#pack">策略基线</a><a href="#rules">8 条规则</a><a href="#risk">上线前</a>
+    <a href="index.html">一页版</a><a href="#arch">分层</a><a href="#seam">接缝</a><a href="#anatomy">沙箱形态</a><a href="#usage">使用样例</a>
+    <a href="#observe">访问了谁</a><a href="#pack">策略基线</a><a href="#rules">9 条规则</a><a href="#risk">上线前</a>
   </div>
 </nav>
 
 <h2 id="arch"><span class="num">01 · 分层</span>四件事各自挡在哪一层</h2>
 <div class="diagram">
-<pre class="mermaid">
-flowchart TB
-  subgraph PL["平台层 · 你已有"]
-    CAPS["Capsule 0.15.2<br/>Tenant · TenantOwner · GlobalTenantResource<br/>配额 / 命名空间 / 标签 / 策略下发"]
-  end
-  subgraph CL["控制层 · 平台拥有，租户不可改"]
-    OS["OpenShell gateway<br/>workspace_mode=operator<br/>agent 能碰什么: 文件 / 网络 / 凭据"]
-    AS["agent-sandbox v1.0.9<br/>Sandbox CR: 稳定身份 · PVC · 预热池"]
-  end
-  subgraph TN["租户层 · 每租户一个 ns"]
-    AG["agent 容器<br/>uid 10001 · drop ALL · seccomp"]
-    SU["supervisor 容器<br/>边界端口 5500"]
-  end
-  subgraph OB["观测层 · 可在另一集群"]
-    TET["Tetragon 1.8.0<br/>eBPF: 实际做了什么 + 内核层拦截"]
-    PR["Prometheus / Loki"]
-  end
-  CAPS -->|"建 ns + 注入<br/>openshell.ai/workspace"| TN
-  CAPS -->|"GlobalTenantResource<br/>下发租户策略"| TET
-  OS -->|"创建 Sandbox CR"| AS --> AG
-  OS -.->|"mTLS + 沙箱 JWT"| SU
-  TET --> PR
-  OS --> PR
-  CAPS --> PR
-</pre>
+  <div class="layers">
+    <div class="lay"><div class="h">平台层 · 你已有</div><b>Capsule 0.15.2</b><span>Tenant / TenantOwner / GlobalTenantResource<br>配额 · 命名空间 · 标签 · 策略下发</span></div>
+    <div class="lay"><div class="h">控制层 · 平台拥有</div><b>OpenShell 0.1.4</b><span>workspace_mode=operator<br>agent 能碰什么：文件 / 网络 / 凭据</span></div>
+    <div class="lay"><div class="h">租户层 · 每租户一个 ns</div><b>agent-sandbox + agent</b><span>Sandbox CR：身份 / PVC / 生命周期<br>agent 容器 uid 10001 · 边界端口 5500</span></div>
+    <div class="lay"><div class="h">观测层 · 可放另一个集群</div><b>Tetragon 1.8.0</b><span>eBPF：实际做了什么 + 内核层拦截<br>Prometheus / Loki</span></div>
+  </div>
+  <p class="lay-cap">Capsule 建 ns 并注入标签 → OpenShell 按标签发现 → 创建 Sandbox CR → agent-sandbox 落地 Pod；Tetragon 独立记录并拦截。四层共用租户标签 <code>projectcapsule.dev/tenant</code>。</p>
 </div>
 <p class="lede">每一层挡的东西不同，不重复造轮子：能力型越权交给容器安全上下文，行为允许交给 OpenShell，独立真相与细粒度拦截交给 Tetragon。</p>
 
@@ -350,8 +351,8 @@ tetragon:
   exportDenyList: '{"namespace":["kube-system",""]}{"health_check":true}'
   exportRateLimit: 2000</code></pre></div>
 
-<h2 id="pack"><span class="num">06 · 策略基线</span>开箱可用的 8 条</h2>
-<p class="lede">位于 <code>poc/tetragon/policies/</code>。全部实测加载无错误，触发情况逐条标注。</p>
+<h2 id="pack"><span class="num">06 · 策略基线</span>开箱可用的 8 个策略</h2>
+<p class="lede">6 个文件、8 个 TracingPolicy，位于 <code>poc/tetragon/policies/</code>。全部实测加载无错误，触发情况逐条标注。</p>
 <div class="tblwrap"><table>
 <thead><tr><th>文件</th><th>内容</th><th>触发</th></tr></thead>
 <tbody>
@@ -389,7 +390,7 @@ spec:
 </tbody></table></div>
 <p>并且它比 NetworkPolicy 更细：按"哪个 binary 连哪个地址"决定（实测只对 <code>python3</code> 生效）。</p>
 
-<h2 id="rules"><span class="num">07 · 规则</span>写策略前必须知道的 8 条</h2>
+<h2 id="rules"><span class="num">07 · 规则</span>写策略前必须知道的 9 条</h2>
 <p class="lede">全部是这次实测踩出来的，其中 3 条我自己在写策略时踩到。<code>tetragon.io</code> 文档没有一处写全。</p>
 
 <div class="rule"><div class="id">R1</div><div class="t">一个 TracingPolicy 只能有一个 section</div>
@@ -478,3 +479,5 @@ document.querySelectorAll('.copy').forEach(function(btn){
   });
 });
 </script>
+</body>
+</html>

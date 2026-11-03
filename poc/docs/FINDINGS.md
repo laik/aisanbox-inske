@@ -1,5 +1,8 @@
 # 多租户 AI Sandbox POC — 实测结论
 
+> 证据附录：第一轮逐项验证、报错原文与踩坑记录。
+> 结论摘要见 [index.html](index.html)（看图版）/ [SUMMARY.md](SUMMARY.md)（文字版）。
+
 日期: 2026-11-03 ｜ 环境: macOS + Docker Desktop 29.2.1(VM kernel 6.12.72-linuxkit, 8C/8G) ｜ kind v0.33.0 × 2, K8s v1.37.0
 
 ## 0. 结论
