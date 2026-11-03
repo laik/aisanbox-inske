@@ -1,0 +1,89 @@
+# Capsule 租户 = AI sandbox 的租户契约。
+# 说明: Capsule v0.15 把 resourceQuotas/limitRanges/networkPolicies 标为 deprecated
+# (迁移方向是 Rules / Replications)，当前版本仍可用；POC 用稳定可用的字段，
+# 并在 notes 里标注迁移路径。
+apiVersion: capsule.clastix.io/v1beta2
+kind: Tenant
+metadata:
+  name: acme
+  labels: {app.kubernetes.io/part-of: aisanbox-poc}
+spec:
+  owners:
+    - kind: Group
+      name: tenant-acme
+  # 关键粘合点: Capsule 给租户下所有 namespace 打标签，
+  # OpenShell 的 workspace_mode=operator 按这个标签发现 namespace。
+  namespaceOptions:
+    additionalMetadata:
+      labels:
+        openshell.ai/workspace: "true"
+        aisanbox.io/tenant: acme
+    quota: 3
+  resourceQuotas:
+    items:
+      - hard:
+          requests.cpu: "2"
+          requests.memory: 2Gi
+          limits.cpu: "2"
+          limits.memory: 2Gi
+          persistentvolumeclaims: "5"
+          count/pods: "20"
+          count/services: "5"
+          requests.storage: 10Gi
+  limitRanges:
+    items:
+      - limits:
+          - type: Container
+            default: {cpu: 500m, memory: 512Mi}
+            defaultRequest: {cpu: 100m, memory: 128Mi}
+            max: {cpu: "1", memory: 1Gi}
+            min: {cpu: 10m, memory: 16Mi}
+  # sandbox 可申请的 RuntimeClass 白名单（gVisor/Kata 落地时启用）
+  runtimeClasses:
+    allowed: [gvisor]
+  storageClasses:
+    allowed: [standard]
+    default: standard
+  # 租户级默认 egress 护栏：只允许 DNS + gateway + 集群内，其余交给 OpenShell supervisor
+  networkPolicies:
+    items:
+      - policyTypes: [Egress]
+        egress:
+          - to:
+              - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
+            ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+---
+apiVersion: capsule.clastix.io/v1beta2
+kind: Tenant
+metadata:
+  name: globex
+  labels: {app.kubernetes.io/part-of: aisanbox-poc}
+spec:
+  owners:
+    - kind: Group
+      name: tenant-globex
+  namespaceOptions:
+    additionalMetadata:
+      labels:
+        openshell.ai/workspace: "true"
+        aisanbox.io/tenant: globex
+    quota: 1
+  # 第二个租户配额刻意很低 —— 用来验证噪声邻居隔离
+  resourceQuotas:
+    items:
+      - hard:
+          requests.cpu: 500m
+          requests.memory: 512Mi
+          limits.cpu: 500m
+          limits.memory: 512Mi
+          persistentvolumeclaims: "2"
+          count/pods: "5"
+  limitRanges:
+    items:
+      - limits:
+          - type: Container
+            default: {cpu: 200m, memory: 256Mi}
+            defaultRequest: {cpu: 50m, memory: 64Mi}
+            max: {cpu: 250m, memory: 256Mi}
+            min: {cpu: 10m, memory: 16Mi}
+  storageClasses: {allowed: [standard], default: standard}

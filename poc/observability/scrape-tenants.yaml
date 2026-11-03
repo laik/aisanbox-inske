@@ -1,0 +1,21 @@
+# plane-b(Prometheus) 直接抓 plane-a 的 NodePort 指标端点。
+# kind 的多个集群共享同一个 Docker 网络，因此 节点IP:NodePort 天然可达；
+# 生产环境对应"平台集群观测租户集群"的常见拓扑(federate / 远程写同理)。
+- job_name: capsule-tenant-quota
+  metrics_path: /metrics
+  scrape_interval: 15s
+  static_configs:
+    - targets: ["172.18.0.2:30901"]
+      labels: {cluster: inske-plane-a, aisanbox_component: capsule}
+- job_name: tetragon-sandbox-activity
+  metrics_path: /metrics
+  scrape_interval: 15s
+  static_configs:
+    - targets: ["172.18.0.2:30902"]
+      labels: {cluster: inske-plane-a, aisanbox_component: tetragon}
+- job_name: openshell-gateway
+  metrics_path: /metrics
+  scrape_interval: 15s
+  static_configs:
+    - targets: ["172.18.0.2:32133"]
+      labels: {cluster: inske-plane-a, aisanbox_component: openshell}

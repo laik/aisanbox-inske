@@ -1,0 +1,38 @@
+# 每个租户在自己的命名空间里有独立的预热池: 池的容量受该租户的
+# Capsule ResourceQuota 约束(实测过: 池太大时 controller 会因超配额被拒绝，
+# 这是"可预测的多租户"的表现，但也要求平台把池容量纳入租户容量规划)。
+# 注意: template 必须显式写 resources —— Capsule 的 LimitRange 默认值会补到
+# 未声明 resources 的 Pod 上，进而让池的实际占用变成 replicas × default。
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxTemplate
+metadata:
+  name: agent-base
+  namespace: acme
+spec:
+  podTemplate:
+    spec:
+      containers:
+        - name: agent
+          image: python:3.12-alpine
+          command: ["python3", "-u", "-c"]
+          args:
+            - |
+              import time
+              while True:
+                  time.sleep(30)
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: ["ALL"]}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: 200m, memory: 256Mi}
+---
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxWarmPool
+metadata:
+  name: agent-pool
+  namespace: acme
+spec:
+  replicas: 2
+  sandboxTemplateRef:
+    name: agent-base

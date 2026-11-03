@@ -1,0 +1,49 @@
+# ---------------------------------------------------------------------------
+# 6) 执行类运行时强制
+# 必须是 lsmhooks + matchArgs(index 0 = 解析后的真实可执行路径)。
+# 已验证: Override + argError: -1 => exec 被拒(EPERM)，调用方 shell 存活；
+#         换成 action: Sigkill 会直接杀进程(破坏性更大)。
+# 真实坑: Alpine/BusyBox 镜像里 /bin/sleep -> /bin/busybox，
+#         按 "/bin/sleep" 写策略永不命中；要按 /bin/busybox 写。
+#         => 平台规范: 用 digest 固定的运行时镜像，或按 busybox 形态写策略。
+# ---------------------------------------------------------------------------
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: agent-exec-enforcement
+  labels: {aisanbox.io/pack: agent-enforcement}
+spec:
+  podSelector:
+    matchLabels: {projectcapsule.dev/tenant: acme}
+  lsmhooks:
+    # 禁止 agent 起 bash(受控入口之外的解释器)。
+    # 实测生效: pip / npm / bash 这类"真实独立文件"可以被精确拒绝
+    #   -> sh: /usr/local/bin/pip: Operation not permitted (0.x 秒返回, 不是超时)
+    - hook: "bprm_check_security"
+      message: "agent:exec-denied-interpreter"
+      args: [{index: 0, type: linux_binprm}]
+      selectors:
+        - matchArgs: [{index: 0, operator: Prefix, values: ["/bin/bash", "/usr/bin/python2"]}]
+          matchActions: [{action: Override, argError: -1}]
+      tags: ["enforce", "process"]
+
+    # ---------------------------------------------------------------------
+    # 实测得到的精确规则(务必按此写策略):
+    #   * kprobe sys_execve 的 args[0]      = 调用者**请求**的路径 (能看到 /bin/sh)
+    #   * lsm bprm matchArgs 的 args[0]      = **解析后**的真实文件 (看到 /bin/busybox)
+    # Alpine/BusyBox 镜像里 /bin/sh、/bin/mount、/bin/echo 全部 -> /bin/busybox，
+    # 所以对它们写 exec 强制**永不命中**(实测 os.system 照样通过)。
+    # 两个可选解法(平台侧建议都做):
+    #   1) agent 运行时镜像用 Debian/Ubuntu 基座(二进制独立), 并按 digest 固定;
+    #   2) 把"能力型越权"交给容器安全上下文: 实测 mount 被 seccomp+drop ALL caps
+    #      在 syscall 层之前挡住(errno 1 EPERM), 这种情况 Tetragon 根本看不到 ——
+    #      这是**好事**: 该挡住的不该靠策略, 策略只补"挡不住但可疑"的行为。
+    # ---------------------------------------------------------------------
+    # 禁止 agent 自行装包(供应链基线; 需要放行时按租户开白名单)
+    - hook: "bprm_check_security"
+      message: "agent:exec-denied-pkgmgr"
+      args: [{index: 0, type: linux_binprm}]
+      selectors:
+        - matchArgs: [{index: 0, operator: Prefix, values: ["/usr/local/bin/pip", "/bin/apk", "/usr/bin/npm"]}]
+          matchActions: [{action: Override, argError: -1}]
+      tags: ["enforce", "supply-chain"]

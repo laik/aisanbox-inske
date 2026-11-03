@@ -1,0 +1,6 @@
+# plane-b: 平台面 — 观测栈，以及同一套租户契约的可移植性验证
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: inske-plane-b
+nodes:
+  - role: control-plane

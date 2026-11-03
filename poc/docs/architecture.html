@@ -1,0 +1,480 @@
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>多租户 AI Sandbox 架构</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* 设计计划 — 冷灰蓝的中性色，深青蓝作为唯一强调色；
+   标题用 Instrument Serif（工程文档里少见的编辑感），正文 IBM Plex Sans，
+   组件名/指标/命令一律走 mono。状态语义色（已验证/未验证）独立于强调色。 */
+:root{
+  --bg:#FBFBFC; --surface:#FFFFFF; --sunken:#F3F5F8;
+  --ink:#14181F; --muted:#59636F; --line:#E1E6EC;
+  --accent:#1E5C78; --accent-soft:#E8F1F5;
+  --ok:#17663C; --ok-soft:#E7F2EA;
+  --warn:#8A4E00; --warn-soft:#FBF0E2;
+  --display:"Instrument Serif",Georgia,"Times New Roman",serif;
+  --body:"IBM Plex Sans",-apple-system,BlinkMacSystemFont,"Helvetica Neue",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#101418; --surface:#171C22; --sunken:#1C222A;
+    --ink:#E8ECF1; --muted:#98A2B0; --line:#2A313A;
+    --accent:#66AECF; --accent-soft:#17252E;
+    --ok:#57B284; --ok-soft:#16241C;
+    --warn:#DBA54A; --warn-soft:#241C10;
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#101418; --surface:#171C22; --sunken:#1C222A;
+  --ink:#E8ECF1; --muted:#98A2B0; --line:#2A313A;
+  --accent:#66AECF; --accent-soft:#17252E;
+  --ok:#57B284; --ok-soft:#16241C;
+  --warn:#DBA54A; --warn-soft:#241C10;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--body);font-size:16px;line-height:1.62;margin:0}
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:10;background:var(--bg)}
+.wrap{max-width:980px;margin:0 auto;padding-block:0 72px;
+  padding-left:max(16px,env(safe-area-inset-left,0px));
+  padding-right:max(16px,env(safe-area-inset-right,0px))}
+
+/* nav */
+nav{position:sticky;top:env(safe-area-inset-top,0px);z-index:9;background:var(--bg);
+  border-bottom:1px solid var(--line);margin-bottom:44px;padding-block:9px}
+nav .wrap{padding-block:0;display:flex;gap:6px;align-items:center;overflow-x:auto;max-width:none}
+nav a{font-family:var(--mono);font-size:11.5px;letter-spacing:.04em;text-transform:uppercase;
+  color:var(--muted);text-decoration:none;white-space:nowrap;padding:5px 9px;border-radius:3px}
+nav a:hover{background:var(--accent-soft);color:var(--accent)}
+
+/* header */
+header{margin-bottom:46px}
+.eyebrow{font-family:var(--mono);font-size:11.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+h1{font-family:var(--display);font-weight:400;font-size:clamp(38px,7.4vw,62px);line-height:1.02;
+  letter-spacing:-.012em;margin:.16em 0 .3em;text-wrap:balance}
+.thesis{font-size:19px;max-width:62ch;color:var(--ink)}
+.thesis b{font-weight:600}
+.provenance{font-family:var(--mono);font-size:12px;color:var(--muted);margin-top:22px;line-height:1.9}
+
+/* type */
+h2{font-family:var(--display);font-weight:400;font-size:clamp(27px,4.2vw,36px);letter-spacing:-.01em;
+  margin:64px 0 6px;text-wrap:balance;scroll-margin-top:64px}
+h2 .num{font-family:var(--mono);font-size:12px;letter-spacing:.1em;color:var(--accent);
+  display:block;margin-bottom:8px;font-weight:500}
+h3{font-size:17px;font-weight:600;margin:34px 0 8px;letter-spacing:-.005em}
+h4{font-size:14px;font-weight:600;margin:22px 0 6px;letter-spacing:.01em}
+p{max-width:66ch;margin:0 0 14px}
+.lede{color:var(--muted);font-size:15.5px;max-width:66ch;margin-bottom:22px}
+ul,ol{max-width:66ch;padding-left:20px;margin:0 0 18px}
+li{margin-bottom:7px}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:.87em;background:var(--sunken);padding:.12em .38em;border-radius:3px;
+  word-break:break-word}
+strong{font-weight:600}
+
+/* code blocks */
+pre{background:var(--sunken);border:1px solid var(--line);border-radius:5px;padding:14px 16px;
+  overflow-x:auto;font-family:var(--mono);font-size:13px;line-height:1.55;margin:0 0 18px;position:relative}
+pre code{background:none;padding:0;font-size:13px}
+.cb{position:relative}
+.copy{position:absolute;top:8px;right:8px;font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;
+  text-transform:uppercase;background:var(--surface);color:var(--muted);border:1px solid var(--line);
+  border-radius:3px;padding:4px 7px;cursor:pointer;opacity:0;transition:opacity .15s}
+.cb:hover .copy,.cb:focus-within .copy{opacity:1}
+.copy:hover{color:var(--accent);border-color:var(--accent)}
+.copy:focus-visible{opacity:1;outline:2px solid var(--accent);outline-offset:1px}
+
+/* tables */
+.tblwrap{overflow-x:auto;margin:0 0 22px;border:1px solid var(--line);border-radius:5px;background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th{text-align:left;font-family:var(--mono);font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;
+  color:var(--muted);padding:10px 12px;border-bottom:1px solid var(--line);background:var(--sunken);font-weight:500}
+td{padding:11px 12px;border-bottom:1px solid var(--line);vertical-align:top;min-width:0}
+tr:last-child td{border-bottom:none}
+td.n{font-variant-numeric:tabular-nums;font-family:var(--mono);font-size:13px;white-space:nowrap}
+table code{font-size:12px}
+
+/* chips */
+.chip{font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;
+  padding:2.5px 7px;border-radius:3px;white-space:nowrap;display:inline-block;font-weight:500}
+.chip.ok{background:var(--ok-soft);color:var(--ok)}
+.chip.warn{background:var(--warn-soft);color:var(--warn)}
+.chip.no{background:var(--warn-soft);color:var(--warn)}
+.chip.info{background:var(--accent-soft);color:var(--accent)}
+
+/* callout */
+.note{border-left:2px solid var(--accent);background:var(--accent-soft);padding:13px 16px;
+  margin:0 0 22px;border-radius:0 5px 5px 0;max-width:66ch}
+.note p:last-child{margin-bottom:0}
+.note.danger{border-left-color:var(--warn);background:var(--warn-soft)}
+.note .h{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;
+  display:block;margin-bottom:5px;color:var(--accent);font-weight:500}
+.note.danger .h{color:var(--warn)}
+
+/* diagram */
+.diagram{border:1px solid var(--line);border-radius:5px;background:var(--surface);padding:12px;
+  overflow-x:auto;margin:0 0 26px}
+.mermaid{min-width:540px;font-size:13px}
+
+/* rule cards (numbered gotchas) */
+.rule{border:1px solid var(--line);border-radius:5px;background:var(--surface);padding:14px 16px;margin-bottom:12px}
+.rule .id{font-family:var(--mono);font-size:11px;color:var(--accent);letter-spacing:.08em;font-weight:500}
+.rule .t{font-weight:600;margin:3px 0 6px}
+.rule p{margin:0;font-size:14.5px;color:var(--ink)}
+.rule pre{margin:10px 0 0}
+
+footer{margin-top:64px;padding-top:20px;border-top:1px solid var(--line);
+  font-family:var(--mono);font-size:12px;color:var(--muted);line-height:1.9}
+@media (max-width:640px){
+  h2{margin-top:48px}
+  .thesis{font-size:17px}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+
+<div class="wrap">
+
+<header>
+  <div class="eyebrow">平台设计 · 已在 kind×2 / K8s v1.37 实测</div>
+  <h1>多租户 AI Sandbox</h1>
+  <p class="thesis">Capsule 与 OpenShell 之间已经有一条官方接缝，不需要自己造：<b><code>workspace_mode&nbsp;=&nbsp;operator</code></b>。
+    接上之后，同一个租户标签贯穿配额、网络边界、执行策略与内核审计，agent 的每一次访问都能归到"哪个租户、哪个 agent、做了什么"。</p>
+  <div class="provenance">
+    Capsule 0.15.2 · agent-sandbox v1.0.9 · OpenShell 0.1.4 (chart 0.1.4) · Tetragon 1.8.0<br>
+    2026-11-03 · kind 0.33 × 2 · Docker Desktop 29.2.1 / kernel 6.12.72 · 每条结论标注 已验证 或 未验证
+  </div>
+</header>
+
+<nav>
+  <div class="wrap">
+    <a href="#arch">分层</a><a href="#seam">接缝</a><a href="#anatomy">沙箱形态</a><a href="#usage">使用样例</a>
+    <a href="#observe">访问了谁</a><a href="#pack">策略基线</a><a href="#rules">8 条规则</a><a href="#risk">上线前</a>
+  </div>
+</nav>
+
+<h2 id="arch"><span class="num">01 · 分层</span>四件事各自挡在哪一层</h2>
+<div class="diagram">
+<pre class="mermaid">
+flowchart TB
+  subgraph PL["平台层 · 你已有"]
+    CAPS["Capsule 0.15.2<br/>Tenant · TenantOwner · GlobalTenantResource<br/>配额 / 命名空间 / 标签 / 策略下发"]
+  end
+  subgraph CL["控制层 · 平台拥有，租户不可改"]
+    OS["OpenShell gateway<br/>workspace_mode=operator<br/>agent 能碰什么: 文件 / 网络 / 凭据"]
+    AS["agent-sandbox v1.0.9<br/>Sandbox CR: 稳定身份 · PVC · 预热池"]
+  end
+  subgraph TN["租户层 · 每租户一个 ns"]
+    AG["agent 容器<br/>uid 10001 · drop ALL · seccomp"]
+    SU["supervisor 容器<br/>边界端口 5500"]
+  end
+  subgraph OB["观测层 · 可在另一集群"]
+    TET["Tetragon 1.8.0<br/>eBPF: 实际做了什么 + 内核层拦截"]
+    PR["Prometheus / Loki"]
+  end
+  CAPS -->|"建 ns + 注入<br/>openshell.ai/workspace"| TN
+  CAPS -->|"GlobalTenantResource<br/>下发租户策略"| TET
+  OS -->|"创建 Sandbox CR"| AS --> AG
+  OS -.->|"mTLS + 沙箱 JWT"| SU
+  TET --> PR
+  OS --> PR
+  CAPS --> PR
+</pre>
+</div>
+<p class="lede">每一层挡的东西不同，不重复造轮子：能力型越权交给容器安全上下文，行为允许交给 OpenShell，独立真相与细粒度拦截交给 Tetragon。</p>
+
+<div class="tblwrap"><table>
+<thead><tr><th>层</th><th>挡什么</th><th>实测证据</th></tr></thead>
+<tbody>
+<tr><td><strong>Capsule</strong></td><td>租户边界：配额、ns 数量、存储类、默认网络护栏</td><td><code>forbidden: exceeded quota: capsule-globex-0</code>；删除后 <code>status.used</code> 正确回落</td></tr>
+<tr><td><strong>安全上下文</strong></td><td>能力型越权（mount / init_module / root）</td><td>裸 <code>mount()</code> → <code>errno 1 EPERM</code>，seccomp 在 syscall 到达内核前挡住</td></tr>
+<tr><td><strong>agent-sandbox</strong></td><td>有状态单例：身份、持久卷、生命周期、预热</td><td>claim 到 Ready 0.25s；PVC <code>workspace-*</code> 随沙箱创建</td></tr>
+<tr><td><strong>OpenShell</strong></td><td>agent 被允许做什么，以及为什么允许</td><td>策略热更新 <code>version 1→2, loaded</code>，无需重启</td></tr>
+<tr><td><strong>Tetragon</strong></td><td>实际做了什么 + 按 binary×地址细粒度拦截</td><td><code>agent:egress-external daddr=1.1.1.1:53</code>；强制时 <code>PermissionError after 0.11s</code></td></tr>
+</tbody></table></div>
+
+<div class="note">
+  <span class="h">这不是拼装</span>
+  <p>OpenShell 的 Kubernetes compute driver 本身就构建在 agent-sandbox 之上：官方安装步骤要求先装 agent-sandbox CRD，网关创建 <code>Sandbox</code> CR，由该控制器落地 Pod。所以"这 3 个项目搭配"是它的官方路径，不是我们的组合发明。</p>
+</div>
+
+<h2 id="seam"><span class="num">02 · 接缝</span>唯一需要接线的一处</h2>
+<div class="tblwrap"><table>
+<thead><tr><th>模式</th><th>namespace 归谁</th><th>适用</th></tr></thead>
+<tbody>
+<tr><td><code>shared</code></td><td>全部落一个 ns</td><td>单团队，隔离最弱</td></tr>
+<tr><td><code>managed</code></td><td>OpenShell 自建 ns</td><td>没有既有租户体系时</td></tr>
+<tr><td><code>operator</code></td><td><strong>平台预建，按 label selector 发现</strong></td><td><span class="chip ok">与 Capsule 对齐</span></td></tr>
+</tbody></table></div>
+
+<div class="cb"><button class="copy" type="button">复制</button><pre><code># capsule/tenants.yaml — 租户侧：给该租户所有 ns 注入被发现的标签
+apiVersion: capsule.clastix.io/v1beta2
+kind: Tenant
+metadata: {name: acme}
+spec:
+  owners: [{kind: Group, name: tenant-acme}]
+  namespaceOptions:
+    additionalMetadata:
+      labels: {openshell.ai/workspace: "true", aisanbox.io/tenant: acme}
+  resourceQuotas:
+    items: [{hard: {limits.cpu: "4", limits.memory: 4Gi, count/pods: "40",
+                    persistentvolumeclaims: "10", requests.storage: 20Gi}}]
+  limitRanges:
+    items:
+      - limits: [{type: Container, default: {cpu: 500m, memory: 512Mi},
+                  defaultRequest: {cpu: 100m, memory: 128Mi},
+                  max: {cpu: "2", memory: 2Gi}, min: {cpu: 10m, memory: 16Mi}}]</code></pre></div>
+
+<div class="cb"><button class="copy" type="button">复制</button><pre><code># openshell/values-plane-a.yaml — 控制面：按该标签发现命名空间
+server:
+  sandboxNamespace: ""        # 必须留空(=release ns)；它同时是网关 Secret 的复制源
+  drivers:
+    kubernetes:
+      workspaceMode: operator
+      operatorNamespaceLabel: "openshell.ai/workspace=true"
+workspaceResources:
+  enabled: false              # 命名空间级前置交给每个租户的 openshell-workspace chart</code></pre></div>
+
+<p>网关日志确认接管：<code>operator namespace allowlist replaced from full relist total=2</code>。</p>
+
+<h2 id="anatomy"><span class="num">03 · 沙箱形态</span>一个沙箱实际长什么样</h2>
+<div class="cb"><button class="copy" type="button">复制</button><pre><code>namespace acme   labels: capsule.clastix.io/tenant=acme · openshell.ai/workspace=true
+├─ Sandbox CR    agents.x-k8s.io/v1beta1            ← OpenShell 建，agent-sandbox 落地
+├─ pod poc-acme-1
+│    labels: projectcapsule.dev/tenant=acme · openshell.ai/boundary-role=workload
+│    └─ container agent   uid 10001 · drop ALL caps · 无 SA token · /sandbox 持久卷
+├─ pod os-supervisor-…   openshell.ai/boundary-role=supervisor
+└─ 三层 NetworkPolicy 叠加: capsule-acme-0 / openshell-sandbox-workloads / …-ssh</code></pre></div>
+<div class="note">
+  <span class="h">最值钱的性质</span>
+  <p>同一个 Pod 上同时带 Capsule 与 OpenShell 的租户标签。因此配额、网络边界、执行策略、内核审计四层能用<b>同一个键</b> <code>projectcapsule.dev/tenant</code> 聚合与选择。Tetragon 的策略因此可以写成"该租户的所有沙箱"，而不是某个 Pod 或容器 ID。</p>
+</div>
+
+<h2 id="usage"><span class="num">04 · 使用样例</span>开通一个租户，然后用它</h2>
+<h3>开通：5 步，没有手工逐项配置</h3>
+<ol>
+  <li><code>Tenant</code>（含上面那根接线标签）</li>
+  <li><code>TenantOwner</code> —— <strong>不注册的话 owner 连 <code>create ns</code> 的权限都没有</strong>（默认 owner 只拿 <code>admin</code> + <code>capsule-namespace-deleter</code>）</li>
+  <li>由 owner 自己建 ns：<code>kubectl create ns acme --as=alice --as-group=tenant-acme</code>（Capsule webhook 注入标签/配额/LimitRange/默认 NP）</li>
+  <li>在该 ns 装 <code>openshell-workspace</code> chart —— operator 模式下这是网关在该 ns 内<strong>唯一</strong>的 Secret 权限来源</li>
+  <li>下发该租户的 Tetragon 策略（手工按租户替换标签，或用 <code>GlobalTenantResource</code> 自动下发）</li>
+</ol>
+
+<h3>租户侧日常</h3>
+<div class="cb"><button class="copy" type="button">复制</button><pre><code>openshell workspace create --name acme
+openshell --workspace acme sandbox create --name try1 \
+  --cpu 200m --memory 256Mi -- python3 -u agent.py
+openshell --workspace acme logs try1 --since 10m
+openshell --workspace acme policy get try1        # 生效策略 + hash + version
+openshell --workspace acme policy update try1 \
+  --add-endpoint "api.github.com:443:read-only:rest:enforce" \
+  --binary /usr/local/bin/python3 --wait          # 实测热更新成功 v1→v2</code></pre></div>
+
+<h3>低延迟：按租户的预热池</h3>
+<p class="lede">池放在租户命名空间里，容量受该租户配额约束。同一集群、同节点实测：</p>
+<div class="tblwrap"><table>
+<thead><tr><th>路径</th><th>到 Ready</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td>认领预热池 <code>SandboxClaim</code></td><td class="n">0.25 s</td><td><span class="chip ok">已验证</span></td></tr>
+<tr><td>冷启动，镜像已在节点</td><td class="n">0.92 s</td><td><span class="chip ok">已验证</span></td></tr>
+<tr><td>冷启动，需拉 20 MB 镜像</td><td class="n">15.98 s</td><td>真实场景的多数情况</td></tr>
+</tbody></table></div>
+<div class="note danger">
+  <span class="h">池会吃租户配额</span>
+  <p>实测：模板不写 <code>resources</code> 时 Capsule LimitRange 的 default 会被补上，实际占用 = <code>replicas × default</code>；池撑爆配额时 agent-sandbox 控制器报 <code>exceeded quota: capsule-acme-0</code>。行为正确（租户边界生效），但<strong>池容量必须进租户容量规划，模板必须显式声明 resources</strong>。</p>
+</div>
+
+<h3>跨集群：观测放平台集群</h3>
+<p>两个 kind 集群共享同一 Docker 网络，所以平台集群直接抓租户集群的 NodePort 即可；生产上是同一拓扑（federate / 远程写同理）。三处 target 全部 <code>up</code>：</p>
+<div class="cb"><button class="copy" type="button">复制</button><pre><code># observability/scrape-tenants.yaml → plane-b Prometheus
+- job_name: capsule-tenant-quota      targets: ["172.18.0.2:30901"]
+- job_name: tetragon-sandbox-activity targets: ["172.18.0.2:30902"]
+- job_name: openshell-gateway         targets: ["172.18.0.2:32133"]</code></pre></div>
+<p>平台容量最有用的一条查询（已跑通，返回真实序列）：</p>
+<div class="cb"><button class="copy" type="button">复制</button><pre><code>max by (tenant,resource) (
+  capsule_tenant_resource_usage / clamp_min(capsule_tenant_resource_limit, 1))
+# acme limits.cpu 50% · globex namespaces 100% · globex count/pods 40% …</code></pre></div>
+
+<h2 id="observe"><span class="num">05 · 观测</span>访问了谁，做了哪些危险操作</h2>
+<div class="tblwrap"><table>
+<thead><tr><th>通道</th><th>内容</th><th>用途</th></tr></thead>
+<tbody>
+<tr><td><code>tetra getevents</code></td><td>实时事件，带 K8s 身份</td><td>排障、临时取证</td></tr>
+<tr><td>节点 <code>/var/log/tetragon/tetragon.log</code></td><td>JSONL 全量流，10MB×5 轮转</td><td>进 Loki / SIEM</td></tr>
+<tr><td><code>:2112/metrics</code></td><td>按 namespace / binary / workload 计数</td><td>告警、趋势</td></tr>
+</tbody></table></div>
+<p>事件自带租户身份，不需要自建映射：</p>
+<div class="cb"><button class="copy" type="button">复制</button><pre><code>process.pod.namespace = acme
+process.pod.labels    = {"projectcapsule.dev/tenant":"acme"}   ← Capsule 注入
+process.uid = 10001 · process.binary · process.arguments · process.parent</code></pre></div>
+
+<h3>访问了谁 —— 实测输出</h3>
+<div class="cb"><button class="copy" type="button">复制</button><pre><code>agent:in-cluster       saddr=10.244.0.19:48100  daddr=10.96.0.10:53
+agent:egress-external  daddr=1.1.1.1:53        ← 已被拦，仍然被记录
+agent:egress-external  daddr=142.1.1.1:80      ← 同上
+agent:listen           saddr=0.0.0.0 sport=31339  ← agent 起服务 = 暴露面变化</code></pre></div>
+<div class="note">
+  <span class="h">Tetragon 记录的是"尝试"</span>
+  <p>NetworkPolicy 与 OpenShell 只决定连接成不成功；<b>"agent 试过连哪儿"只有这一层看得到</b>。这是它作为独立真相的意义 —— 也是它能审计策略本身的机会。</p>
+</div>
+
+<h3>危险操作 —— 实测命中样本</h3>
+<div class="tblwrap"><table>
+<thead><tr><th>行为</th><th>message</th><th>真实 args</th></tr></thead>
+<tbody>
+<tr><td>读配置 / 凭据目录</td><td><code>agent:open-sensitive</code></td><td><code>/etc/hosts</code> · <code>/etc/resolv.conf</code> · <code>/etc/localtime</code></td></tr>
+<tr><td>删文件</td><td><code>agent:file-delete</code></td><td><code>/tmp/x1</code></td></tr>
+<tr><td>移动 / 覆盖</td><td><code>agent:rename</code></td><td><code>/tmp/a</code> → <code>/tmp/b</code></td></tr>
+<tr><td>起 shell</td><td><code>agent:risky-exec</code></td><td>caller=<code>python3</code> → target=<code>/bin/sh</code></td></tr>
+<tr><td>装包</td><td><code>agent:package-manager</code></td><td><code>/usr/local/bin/pip</code>（LSM 命中）</td></tr>
+<tr><td>改运行身份</td><td><code>agent:setuid-attempt</code></td><td>uid 0 · 噪声较高，建议只在审计通道开</td></tr>
+</tbody></table></div>
+
+<h3>两条通道必须一起看</h3>
+<div class="tblwrap"><table>
+<thead><tr><th></th><th>回答的问题</th><th>来源</th></tr></thead>
+<tbody>
+<tr><td><strong>Tetragon</strong></td><td>发生了什么</td><td>内核事件</td></tr>
+<tr><td><strong>OpenShell</strong></td><td>允许什么，<em>为什么</em>允许/拒绝</td><td>OCSF 判定 + 策略版本链</td></tr>
+</tbody></table></div>
+<div class="cb"><button class="copy" type="button">复制</button><pre><code>OCSF NET:OPEN [MED] DENIED /usr/bin/curl(64) -> api.github.com:443 [policy:- engine:opa]
+OCSF CONFIG:LOADED Policy revision loaded [version:2] [hash:21baa807…]
+
+openshell --workspace acme policy get try1     # 生效策略 + hash
+openshell --workspace acme policy list try1    # 变更历史 = 审计链</code></pre></div>
+<p class="lede">只有前者，你知道"连了 1.1.1.1"；只有后者，你不知道"实际连没连上"。合起来才是完整结论。</p>
+<div class="cb"><button class="copy" type="button">复制</button><pre><code># 接入日志管线时收紧默认导出，否则全集群事件量很大
+tetragon:
+  exportAllowList: '{"event_set":["PROCESS_EXEC","PROCESS_KPROBE"]}'
+  exportDenyList: '{"namespace":["kube-system",""]}{"health_check":true}'
+  exportRateLimit: 2000</code></pre></div>
+
+<h2 id="pack"><span class="num">06 · 策略基线</span>开箱可用的 8 条</h2>
+<p class="lede">位于 <code>poc/tetragon/policies/</code>。全部实测加载无错误，触发情况逐条标注。</p>
+<div class="tblwrap"><table>
+<thead><tr><th>文件</th><th>内容</th><th>触发</th></tr></thead>
+<tbody>
+<tr><td><code>00-egress-who.yaml</code></td><td>出网 / 集群内 / 监听端口</td><td><span class="chip ok">3/3</span></td></tr>
+<tr><td><code>10-dangerous-fs.yaml</code></td><td>读敏感路径 / 删除 / 移动</td><td><span class="chip ok">3/3</span></td></tr>
+<tr><td><code>20-supply-chain.yaml</code></td><td>装包（LSM）/ 改身份</td><td><span class="chip ok">2/2</span></td></tr>
+<tr><td><code>30-exec-and-proc.yaml</code></td><td>全量执行审计 / 高风险执行 / 加载内核模块</td><td><span class="chip ok">2/3</span> <span class="chip info">1 条件性</span></td></tr>
+<tr><td><code>40-enforce-network.yaml</code></td><td>拒绝指定地址 / 云元数据服务（凭据窃取路径）</td><td><span class="chip ok">已验证拦截</span></td></tr>
+<tr><td><code>50-enforce-exec.yaml</code></td><td>拒绝指定解释器与包管理器</td><td><span class="chip ok">已验证拦截</span></td></tr>
+</tbody></table></div>
+<div class="cb"><button class="copy" type="button">复制</button><pre><code># 所有策略的租户锚点 —— 不是 Pod 名，不是容器 ID
+podSelector:
+  matchLabels: {projectcapsule.dev/tenant: acme}</code></pre></div>
+<p>按租户差异化有两条路：每租户一份（<code>usage/01-onboard-tenant.sh</code> 第 5 步做标签替换），或让 Capsule 自动下发 —— 实测 <code>gtr … READY=True</code>，策略自动出现在租户 ns：</p>
+<div class="cb"><button class="copy" type="button">复制</button><pre><code>apiVersion: capsule.clastix.io/v1beta2
+kind: GlobalTenantResource
+metadata: {name: aisanbox-agent-audit}
+spec:
+  tenantSelector: {matchLabels: {app.kubernetes.io/part-of: aisanbox-poc}}
+  resyncPeriod: 60s
+  resources:
+    - namespaceSelector: {matchLabels: {capsule.clastix.io/tenant: acme}}
+      rawItems:
+        - apiVersion: cilium.io/v1alpha1
+          kind: TracingPolicyNamespaced
+          metadata: {name: tenant-agent-audit}
+          spec: {kprobes: […]}</code></pre></div>
+
+<h3 id="enforce">一个实际收益：快速失败 vs 挂起</h3>
+<div class="tblwrap"><table>
+<thead><tr><th>拦同一个目的地</th><th>agent 侧表现</th><th>耗时</th></tr></thead>
+<tbody>
+<tr><td>NetworkPolicy</td><td>连接超时，会撑爆 agent 的超时/重试逻辑</td><td class="n">~6.0 s</td></tr>
+<tr><td>Tetragon <code>security_socket_connect</code> + <code>Override</code></td><td><code>PermissionError</code>，agent 可立刻改道或报错</td><td class="n">0.11 s</td></tr>
+</tbody></table></div>
+<p>并且它比 NetworkPolicy 更细：按"哪个 binary 连哪个地址"决定（实测只对 <code>python3</code> 生效）。</p>
+
+<h2 id="rules"><span class="num">07 · 规则</span>写策略前必须知道的 8 条</h2>
+<p class="lede">全部是这次实测踩出来的，其中 3 条我自己在写策略时踩到。<code>tetragon.io</code> 文档没有一处写全。</p>
+
+<div class="rule"><div class="id">R1</div><div class="t">一个 TracingPolicy 只能有一个 section</div>
+<p><code>kprobes</code> 与 <code>lsmhooks</code> 混写 → 整条策略不加载，报 <code>tracing policies with multiple sections … are not supported</code>。报错不指向具体行，很容易误判成别的错。把观测与强制拆成两个文件。</p></div>
+
+<div class="rule"><div class="id">R2</div><div class="t">kprobe 与 LSM 看到的"路径"不是同一个东西</div>
+<p><code>sys_execve</code> 的 <code>args[0]</code> = 调用者<b>请求</b>的路径（<code>/bin/sh</code>）；<code>bprm_check_security</code> 的 <code>matchArgs args[0]</code> = <b>解析后</b>的真实文件（<code>/bin/busybox</code>）。同一个语义，两个视图。</p>
+<pre><code>caller=python3 --exec--> args[0]="/bin/sh"        # kprobe sys_execve
+bprm   args[0]="/bin/busybox"                      # lsm bprm(已解析)</code></pre></div>
+
+<div class="rule"><div class="id">R3</div><div class="t">在 <code>bprm_check_security</code> 上匹配执行目标要用 <code>matchArgs</code>，不是 <code>matchBinaries</code></div>
+<p>后者匹配的是调用者（那时二进制还没换），实测永不命中。官方样例 <code>examples/tracingpolicy/lsm_bprm_check.yaml</code> 就是这个写法。<em>相反</em>，在 <code>security_socket_connect</code> 上 <code>matchBinaries</code> 是正确且有效的（socket 由调用者建立）。</p></div>
+
+<div class="rule"><div class="id">R4</div><div class="t">BusyBox/Alpine 形态下按 <code>/bin/sleep</code>、<code>/bin/sh</code> 写 exec 强制永不命中</div>
+<p>实测 <code>/bin/sh</code>、<code>/bin/mount</code>、<code>/bin/echo</code>、<code>/bin/sleep</code> 全部 → <code>/bin/busybox</code>，<code>os.system()</code> 照样通过。真实独立文件（<code>pip</code>、<code>npm</code>、<code>bash</code>）则能被精确拒掉。</p>
+<pre><code>/bin/sh    -> /bin/busybox     /usr/local/bin/pip -> 自身(可精确拦)
+/bin/mount -> /bin/busybox     /bin/bash          -> 自身(可精确拦)</code></pre>
+<p style="margin-top:8px">平台规范二选一：agent 运行时用 Debian/Ubuntu 基座并按 digest 固定；或按 busybox 形态写策略。</p></div>
+
+<div class="rule"><div class="id">R5</div><div class="t">socket 参数的操作符不能混用，错了不报错</div>
+<p><code>type: sockaddr</code> 只支持 <code>SAddr</code> / <code>SPort</code> / <code>Family</code>。对它用 <code>DAddr</code>：加载不报错，但<b>永不匹配</b>（我在这条上连着误判两次）。按目的地址筛连接要用 <code>type: sock</code> + <code>tcp_connect</code>。</p></div>
+
+<div class="rule"><div class="id">R6</div><div class="t">监听端口要用 <code>security_socket_listen</code> + <code>type: socket</code></div>
+<p>常见写法 <code>inet_listen</code> + <code>sock</code> 会解析出乱值（<code>family:"27840"</code>, <code>saddr:"invalid IP"</code>）。改成前者后实测拿到真值 <code>saddr=0.0.0.0 sport=31339</code>。</p></div>
+
+<div class="rule"><div class="id">R7</div><div class="t">能力型越权不该靠策略，而且 Tetragon 也看不见</div>
+<p>裸 <code>mount()</code> / <code>init_module()</code> 实测得到 <code>errno 1 EPERM</code>：seccomp + <code>drop ALL</code> caps 在 syscall 到达内核前就挡住了，因此 kprobe 完全没有事件。这是<strong>分层正确</strong>，不是漏采 —— 策略只该补"挡不住但可疑"的行为。</p></div>
+
+<div class="rule"><div class="id">R8</div><div class="t">glibc 的 <code>rename()</code> 走 <code>sys_renameat</code></div>
+<p>写 <code>sys_rename</code>（index 0/1）不会触发。正确是 <code>sys_renameat(dirfd, old, newdirfd, new)</code> → index 1 与 3。改完实测命中 <code>/tmp/a → /tmp/b</code>。</p></div>
+
+<div class="rule"><div class="id">R9</div><div class="t">版本获取陷阱（非 Tetragon，但会浪费半天）</div>
+<p>文档 <code>docs.nvidia.com/openshell/latest</code> 讲 v0.1.6，而 GHCR tag 列表首页最高只有 <code>0.0.42</code> —— registry 分页所致，真实最新稳定是 <code>0.1.4</code>。取 tag 必须分页拉全再按语义版本排序。</p></div>
+
+<h2 id="risk"><span class="num">08 · 上线前</span>7 项未验证或需处理</h2>
+<div class="tblwrap"><table>
+<thead><tr><th>项</th><th>状态</th><th>细节与建议</th></tr></thead>
+<tbody>
+<tr><td>沙箱 DNS 走 supervisor 边界</td><td><span class="chip no">未达成</span></td><td>沙箱 <code>resolv.conf</code> 指向 <code>127.0.0.53</code>；到 cluster DNS:53 通，到 supervisor:53/:8080 超时。L7 策略热更新成功但请求没到边界，拿不到官方教程里 <code>403 from proxy after CONNECT</code>。<strong>先在自己的环境验这段</strong>，它决定"用 L7 策略放行出网"这条路径是否可用。</td></tr>
+<tr><td>Capsule <code>runtimeClasses</code> 白名单</td><td><span class="chip no">未拦住</span></td><td>设 <code>allowed:[gvisor]</code> 后用 tenant owner 建 <code>runtimeClassName: kata-containers</code> 被<strong>接受</strong>，到 kubelet 才失败。要按租户限制 gVisor/Kata，需自补一层 CEL ValidatingPolicy。</td></tr>
+<tr><td>两条 sandbox 路径未打通</td><td><span class="chip no">缺口</span></td><td>预热池认领出的沙箱<strong>不带</strong> OpenShell supervisor / policy（无网络边界、无凭据注入）。要"低延迟 + 有策略"，需要 OpenShell 支持从池认领；目前 <code>allow_driver_config</code> 不提供该语义。</td></tr>
+<tr><td>hypervisor 级隔离</td><td><span class="chip no">未做</span></td><td>kind / Docker Desktop 无现成 gVisor 节点镜像。当前强度来自 supervisor + NP + 非 root + seccomp。跑不可信 LLM 代码仍需 gVisor/Kata。</td></tr>
+<tr><td>OpenShell 多集群</td><td><span class="chip no">单集群</span></td><td>K8s driver 用 in-cluster client，无 kubeconfig 选项 → 多集群只能每集群一套 gateway（联邦），或按租户分片。</td></tr>
+<tr><td>HA</td><td><span class="chip warn">需改</span></td><td>默认 StatefulSet + 单副本 + SQLite 只够 POC。生产要 <code>workload.kind=deployment</code> + 外部 PostgreSQL，且 PostgreSQL 自身另做 HA。</td></tr>
+<tr><td>Capsule 字段生命周期 / 所有权冲突</td><td><span class="chip warn">注意</span></td><td><code>resourceQuotas</code>·<code>limitRanges</code>·<code>networkPolicies</code>·<code>additionalMetadata</code> 已标 deprecated（apply 时给迁移警告），方向是 <code>rules</code> + <code>*TenantResource</code>。<code>GlobalTenantResource</code> 对已由 Helm 管理的同名资源（如 <code>openshell-sandbox</code> SA）会 <code>applying of 1 resources failed</code> —— SA 要么交给 GTR，要么交给 per-ns Helm，二选一。</td></tr>
+</tbody></table></div>
+
+<h2 id="files"><span class="num">09 · 复现</span>文件与一键重建</h2>
+<div class="cb"><button class="copy" type="button">复制</button><pre><code>poc/
+├── kind/          cluster-a.yaml · cluster-b.yaml
+├── capsule/       tenants · tenant-owners · global-tenant-resource
+├── openshell/     values-plane-a.yaml        # operator 模式接线
+├── agent-sandbox/ warmpool-acme · claim-acme-2
+├── tetragon/      policies/{00..50}-*.yaml   # 策略基线
+├── observability/ scrape-tenants.yaml        # 跨集群抓取
+├── usage/         01-onboard-tenant.sh · 02-agent-visibility.md
+├── scripts/       bootstrap.sh · bench-latency.py
+└── docs/          SUMMARY.md · FINDINGS.md   # 逐项验证与坑
+
+bash poc/scripts/bootstrap.sh        # 一键重建两个集群与全部组件
+python3 poc/scripts/bench-latency.py # 冷启动 vs 预热池延迟基准</code></pre></div>
+<p class="lede">注意 <code>bootstrap.sh</code> 假设 Docker 至少 8 GiB（两个集群常驻约 2.5–3 GiB）；Tetragon 需要 <code>/sys/kernel/btf/vmlinux</code>，Docker Desktop 6.12 满足，其他环境要先确认。</p>
+
+<footer>
+  实测环境 kind 0.33 × 2 · K8s v1.37.0 · Capsule 0.15.2 · agent-sandbox v1.0.9 · OpenShell 0.1.4 · Tetragon 1.8.0<br>
+  标注"已验证"的条目均有对应命令输出；"未达成/未验证"条目在 §8 说明了观察到的现象与未定论的原因。
+</footer>
+
+</div>
+
+<script>
+document.querySelectorAll('.copy').forEach(function(btn){
+  btn.addEventListener('click', function(){
+    var pre = btn.parentElement.querySelector('pre');
+    if(!pre) return;
+    var txt = pre.innerText;
+    var done = function(){ btn.textContent='已复制'; setTimeout(function(){btn.textContent='复制';},1400); };
+    try {
+      navigator.clipboard.writeText(txt).then(done, function(){ fallback(); });
+    } catch(e){ fallback(); }
+    function fallback(){
+      var r=document.createRange(); r.selectNode(pre);
+      var s=getSelection(); s.removeAllRanges(); s.addRange(r);
+      btn.textContent='已选中'; setTimeout(function(){btn.textContent='复制'; s.removeAllRanges();},1400);
+    }
+  });
+});
+</script>

@@ -1,0 +1,17 @@
+# Capsule v0.15: TenantOwner 注册"谁是租户用户"，并按 projectcapsule.dev 组
+# 自动授予 capsule-namespace-provisioner（可在集群内建 ns）+ owner 权限。
+apiVersion: v1
+kind: List
+items:
+- apiVersion: capsule.clastix.io/v1beta2
+  kind: TenantOwner
+  metadata:
+    name: acme-owner
+    labels: {projectcapsule.dev/tenant: acme}
+  spec: {kind: Group, name: tenant-acme}
+- apiVersion: capsule.clastix.io/v1beta2
+  kind: TenantOwner
+  metadata:
+    name: globex-owner
+    labels: {projectcapsule.dev/tenant: globex}
+  spec: {kind: Group, name: tenant-globex}

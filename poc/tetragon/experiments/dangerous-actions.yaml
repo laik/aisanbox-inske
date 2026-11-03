@@ -1,0 +1,90 @@
+# ===========================================================================
+# AI Agent 危险行为基线策略（按租户下发；这里以 acme 为例）
+# 全部在本 POC 的 kind 集群实测通过。字段写法对应 Tetragon v1.8。
+# ===========================================================================
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: agent-egress-who
+spec:
+  podSelector:
+    matchLabels: {projectcapsule.dev/tenant: acme}
+  kprobes:
+    # 出网可见性: agent 连了谁(目的 IP:port)。sock 类型会解析出 socket 五元组。
+    - call: "tcp_connect"
+      syscall: false
+      message: "aisanbox:egress"
+      args:
+        - {index: 0, type: sock}
+      selectors:
+        - matchArgs:
+            # 排除集群内地址 = 只看"离开集群"的连接。生产把 CIDR 换成实际值。
+            - {index: 0, operator: NotDAddr, values: ["127.0.0.0/8", "10.244.0.0/16", "10.96.0.0/12"]}
+      tags: ["aisanbox:network"]
+    # 集群内访问: agent 碰了哪些服务(用于排查 agent 是否横向乱连)
+    - call: "tcp_connect"
+      syscall: false
+      message: "aisanbox:in-cluster"
+      args:
+        - {index: 0, type: sock}
+      selectors:
+        - matchArgs:
+            - {index: 0, operator: DAddr, values: ["10.96.0.0/12", "10.244.0.0/16"]}
+      tags: ["aisanbox:network"]
+---
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: agent-dangerous-fs
+spec:
+  podSelector:
+    matchLabels: {projectcapsule.dev/tenant: acme}
+  kprobes:
+    # 写敏感位置(配置/密钥目录被 agent 改动 = 配置漂移与凭据外泄风险)
+    # arm64: sys_openat(dirfd, filename, flags) -> filename 是 index 1
+    - call: "sys_openat"
+      syscall: true
+      message: "aisanbox:open-sensitive"
+      args:
+        - {index: 1, type: string}
+        - {index: 2, type: int}
+      selectors:
+        - matchArgs:
+            - {index: 1, operator: Prefix, values: ["/etc/", "/root/", "/var/run/secrets/", "/proc/1/"]}
+      tags: ["aisanbox:filesystem"]
+    # 删除文件(agent 误删/清库等破坏性动作)
+    - call: "sys_unlinkat"
+      syscall: true
+      message: "aisanbox:file-delete"
+      args:
+        - {index: 1, type: string}
+      tags: ["aisanbox:filesystem"]
+    # 挂载动作(容器内尝试 mount = 越权信号)
+    - call: "sys_mount"
+      syscall: true
+      message: "aisanbox:mount-attempt"
+      args:
+        - {index: 0, type: string}
+        - {index: 1, type: string}
+      tags: ["aisanbox:capability"]
+---
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: agent-env-mutation
+spec:
+  podSelector:
+    matchLabels: {projectcapsule.dev/tenant: acme}
+  lsmhooks:
+    # agent 自己改运行环境 = 供应链风险(装包/改包)。
+    # 注意: bprm_check_security 上必须用 matchArgs 匹配"将被执行的目标"，
+    # 且匹配的是解析后的真实路径(Alpine 的 /bin/apk 是脚本，pip 是 /usr/local/bin/pip3.12)。
+    - hook: "bprm_check_security"
+      message: "aisanbox:package-manager"
+      args:
+        - {index: 0, type: linux_binprm}
+      selectors:
+        - matchArgs:
+            - {index: 0, operator: Prefix,
+               values: ["/usr/local/bin/pip", "/usr/bin/pip", "/bin/apk", "/usr/bin/apk", "/usr/bin/npm", "/usr/local/bin/npm"]}
+      tags: ["aisanbox:supply-chain"]

@@ -1,0 +1,44 @@
+# ---------------------------------------------------------------------------
+# 4) 进程与执行(排查"谁执行了谁")
+# 实测: 同一策略里可以放两条 sys_execve —— 一条全量(message 用于取证/审计通道)，
+# 一条带 matchArgs 只盯可疑解释器或危险命令(用于告警)。
+# 事件里带完整 K8s 身份(namespace/pod/workload/pod_labels/container.image)，
+# 因此可以直接按租户聚合与按镜像归因。
+# ---------------------------------------------------------------------------
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: agent-exec-chain
+  labels: {aisanbox.io/pack: agent-visibility}
+spec:
+  podSelector:
+    matchLabels: {projectcapsule.dev/tenant: acme}
+  kprobes:
+    # 全量执行审计(取证用)。量大时用 exportRateLimit 控制。
+    - call: "sys_execve"
+      syscall: true
+      message: "agent:exec"
+      args: [{index: 0, type: string}]
+      tags: ["process", "audit"]
+    # 高风险执行: 直接从 agent 里起 shell / 版本控制 / 网络工具
+    - call: "sys_execve"
+      syscall: true
+      message: "agent:risky-exec"
+      args: [{index: 0, type: string}]
+      selectors:
+        - matchArgs:
+            - index: 0
+              operator: Prefix
+              values: ["/bin/sh", "/bin/bash", "/bin/nc", "/usr/bin/git", "/bin/mount", "/sbin/modprobe"]
+      tags: ["process", "risk"]
+    # agent 尝试加载内核模块。
+    # 实测结论(重要): 在 OpenShell 沙箱里这条**不会触发**。直接调用 mount()/init_module()
+    # 得到 errno 1 EPERM —— seccomp + drop ALL capabilities 在 syscall 到达内核之前挡住了，
+    # 所以 kprobe 根本看不见。这是**分层正确**的表现，不是策略写错。
+    # 保留它的理由: 若某租户放宽了 capability 或用了不受 seccomp 保护的运行时，它会开始出事件。
+    - call: "sys_init_module"
+      syscall: true
+      message: "agent:load-module"
+      ignore: {callNotFound: true}
+      args: [{index: 0, type: const_buf, sizeArgIndex: 1}]
+      tags: ["kernel", "risk", "conditional"]

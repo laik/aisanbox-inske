@@ -1,0 +1,59 @@
+# ---------------------------------------------------------------------------
+# 1) Agent 访问了谁
+# 实测: 用 tcp_connect + type: sock 才能拿到完整五元组(saddr/daddr/sport/dport)。
+#       用 sys_connect + type: sockaddr 只有目的地址，看不到源，也无法按端口族筛选。
+# 关键点: 被 NetworkPolicy / OpenShell 策略拦掉的连接一样会被记录 ——
+#         Tetragon 记录的是"尝试"，这正是它作为独立真相的价值。
+# 作用域: cluster-scoped + podSelector 用 Capsule 注入的租户标签，
+#         一个策略覆盖该租户所有命名空间。要按租户差异化就每租户一份，
+#         或用 Capsule GlobalTenantResource 下发(见 60-tenant-autopilot.yaml)。
+# ---------------------------------------------------------------------------
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: agent-egress-who
+  labels: {aisanbox.io/pack: agent-visibility}
+spec:
+  podSelector:
+    matchLabels: {projectcapsule.dev/tenant: acme}
+  kprobes:
+    # 离开集群的连接
+    - call: "tcp_connect"
+      syscall: false
+      message: "agent:egress-external"
+      args: [{index: 0, type: sock}]
+      selectors:
+        - matchArgs:
+            - index: 0
+              operator: NotDAddr
+              # 换成你集群实际的 Pod/Service/Node CIDR；这里排除 RFC1918 = 只看真正出公网
+              values: ["10.244.0.0/16", "10.96.0.0/12", "127.0.0.0/8", "172.18.0.0/16"]
+      tags: ["network", "egress"]
+    # 集群内的连接: 排查 agent 是否横向乱连(例如直连别的租户的服务)
+    - call: "tcp_connect"
+      syscall: false
+      message: "agent:in-cluster"
+      args: [{index: 0, type: sock}]
+      selectors:
+        - matchArgs:
+            - {index: 0, operator: DAddr, values: ["10.96.0.0/12", "10.244.0.0/16"]}
+      tags: ["network", "lateral"]
+---
+# 监听/绑定行为(agent 起服务 = 暴露面变化)
+# 实测坑: 用 inet_listen + type: sock 会解析出乱值(family="27840", saddr="invalid IP")。
+# 正确写法是 security_socket_listen + type: socket -> 得到 saddr/sport 真值
+# (实测 bind 0.0.0.0:31338 -> "saddr": "0.0.0.0", "sport": 31338)。
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: agent-listen
+  labels: {aisanbox.io/pack: agent-visibility}
+spec:
+  podSelector:
+    matchLabels: {projectcapsule.dev/tenant: acme}
+  kprobes:
+    - call: "security_socket_listen"
+      syscall: false
+      message: "agent:listen"
+      args: [{index: 0, type: socket}, {index: 1, type: int}]
+      tags: ["network", "exposure"]

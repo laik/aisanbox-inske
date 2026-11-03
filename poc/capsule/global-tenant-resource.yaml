@@ -1,0 +1,38 @@
+# Capsule v0.15 GlobalTenantResource: 按租户选择器把资源自动下发到租户的命名空间。
+# 运维含义: "每个租户 ns 都必须有的东西"由平台自动维护 —— 新增租户不需要额外手工步骤。
+# (实测字段名: resources[].namespaceSelector + resources[].rawItems，不是 apiVersion/kind 直铺)
+apiVersion: capsule.clastix.io/v1beta2
+kind: GlobalTenantResource
+metadata:
+  name: aisanbox-agent-audit
+  labels: {app.kubernetes.io/part-of: aisanbox-poc}
+spec:
+  tenantSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: aisanbox-poc
+  resyncPeriod: 60s
+  pruningOnDelete: true
+  resources:
+    - namespaceSelector:
+        matchLabels:
+          capsule.clastix.io/tenant: acme
+      rawItems:
+        - apiVersion: cilium.io/v1alpha1
+          kind: TracingPolicyNamespaced
+          metadata:
+            name: tenant-agent-audit
+          spec:
+            kprobes:
+              - call: "sys_execve"
+                syscall: true
+                message: "aisanbox:tenant-agent-exec"
+                args: [{index: 0, type: string}]
+              - call: "sys_openat"
+                syscall: true
+                message: "aisanbox:tenant-agent-open-sensitive"
+                args:
+                  - {index: 1, type: string}
+              - call: "sys_connect"
+                syscall: true
+                message: "aisanbox:tenant-agent-connect"
+                args: [{index: 1, type: sockaddr}]

@@ -1,0 +1,21 @@
+# OpenShell gateway, plane-a (租户数据面)
+# 关键接缝: workspace_mode=operator —— 命名空间不由 OpenShell 创建，
+# 而是复用 Capsule Tenant 已 provision 并打好标签的 namespace。
+server:
+  logLevel: info
+  # 留空 = Helm release namespace(openshell)。operator 模式下真实落点由下面的
+  # 标签发现决定；这个字段同时充当 gateway Secret(如 openshell-client-tls)的
+  # 复制源命名空间 —— 指到租户 ns 会让复制找不到源。
+  drivers:
+    kubernetes:
+      workspaceMode: operator
+      operatorNamespaceLabel: "openshell.ai/workspace=true"
+  telemetryEnabled: false
+
+# 命名空间级前置资源(SA/Role/NetworkPolicy)交给 openshell-workspace 子 chart，
+# 在每个租户 ns 里各装一份 —— 租户内的权限由租户自己的 release 管理。
+workspaceResources:
+  enabled: false
+
+# 单副本 + 内置 SQLite: POC 够用；生产按 HA 文档换 PostgreSQL + Deployment
+replicaCount: 1

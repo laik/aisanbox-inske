@@ -1,0 +1,41 @@
+# ---------------------------------------------------------------------------
+# 5) 网络运行时强制(不只是看见，而是当场拒绝)
+# 实测差异，很重要:
+#   - NetworkPolicy 拦的连接是 **6s 超时**(agent 会挂住，容易撑爆它的超时/重试)
+#   - 这条策略拦下的是 **0.11s 返回 EPERM** —— 快速失败，agent 能立即改道
+#   - 而且它与 NetworkPolicy 是不同控制点: 按"哪个 binary 连哪个地址"决定
+# 踩过的坑: 对 type: sockaddr 的参数只能用 SAddr / SPort / Family；
+#   用 DAddr 不报错但**永不匹配**(DAddr 只对 type: sock 有效, 见 00-egress-who.yaml)。
+# matchBinaries 在这个钩子上是有效的(它匹配发起 connect 的进程，语义正确)。
+# ---------------------------------------------------------------------------
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: agent-egress-enforcement
+  labels: {aisanbox.io/pack: agent-enforcement}
+spec:
+  podSelector:
+    matchLabels: {projectcapsule.dev/tenant: acme}
+  kprobes:
+    # 例: 该租户的 python agent 不允许直连公共 DNS(强制走受控解析)
+    - call: "security_socket_connect"
+      syscall: false
+      message: "agent:egress-denied"
+      args: [{index: 0, type: socket}, {index: 1, type: sockaddr}]
+      selectors:
+        - matchArgs:
+            - {index: 1, operator: SAddr, values: ["1.1.1.1", "8.8.8.8"]}
+          matchBinaries:
+            - {operator: Prefix, values: ["/usr/local/bin/python", "/bin/nc"]}
+          matchActions: [{action: Override, argError: -1}]
+      tags: ["enforce", "network"]
+    # 例: 禁止 agent 直连云元数据服务(凭据窃取的经典路径)
+    - call: "security_socket_connect"
+      syscall: false
+      message: "agent:metadata-denied"
+      args: [{index: 0, type: socket}, {index: 1, type: sockaddr}]
+      selectors:
+        - matchArgs:
+            - {index: 1, operator: SAddr, values: ["169.254.169.254"]}
+          matchActions: [{action: Override, argError: -1}]
+      tags: ["enforce", "credential-theft"]

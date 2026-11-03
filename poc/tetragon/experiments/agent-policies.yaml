@@ -1,0 +1,72 @@
+# ---------------------------------------------------------------------------
+# Tetragon 策略按"租户身份"选工作负载。
+# 关键事实(实测): OpenShell 创建的 sandbox workload Pod 带有 Capsule 注入的
+#   projectcapsule.dev/tenant=<tenant>
+# 所以安全策略的锚点是租户，而不是 Pod 名 / 容器 ID —— 这正是多租户平台要的写法。
+#
+# 作用域选择:
+#   TracingPolicyNamespaced  -> 只作用于它所在的 namespace(= 租户的一个 ns)
+#   TracingPolicy (cluster)  -> 作用于匹配 label 的所有 ns(= 租户的全部 ns)
+# ---------------------------------------------------------------------------
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicyNamespaced
+metadata:
+  name: agent-activity-audit
+spec:
+  podSelector:
+    matchLabels:
+      projectcapsule.dev/tenant: acme
+  kprobes:
+    # 1) agent 执行了什么命令(可执行路径 + 参数)
+    - call: "sys_execve"
+      syscall: true
+      message: "aisanbox:agent-exec"
+      args:
+        - {index: 0, type: string}
+    # 2) agent 打开了哪些敏感路径 —— 判断 agent 是否试图越界读
+    #    (arm64 sys_openat(dirfd, pathname, flags): pathname 是 arg index 1)
+    - call: "sys_openat"
+      syscall: true
+      message: "aisanbox:agent-open-sensitive"
+      args:
+        - {index: 1, type: string}
+      selectors:
+        - matchArgs:
+            - {index: 1, operator: Prefix, values: ["/etc/", "/root/", "/var/run/secrets/"]}
+    # 3) agent 发起的连接(目的地址/端口) —— 与 OpenShell 的 egress policy 互相印证
+    - call: "sys_connect"
+      syscall: true
+      message: "aisanbox:agent-connect"
+      args:
+        - {index: 1, type: sockaddr}
+---
+# 运行时强制(不只是记录)。
+# 用 LSM 钩子 bprm_check_security —— 它在新二进制"即将获得权限"时触发。
+# 两个实测踩过的坑:
+#  1) 挂在 sys_execve + matchBinaries 上不会命中: 那时二进制还没换，匹配到的是调用者(sh)。
+#  2) 这里必须用 matchArgs 匹配已解析的 filename 参数。
+# 另: args 里不要写 resolve: "bprm->filename" —— v1.8 报
+#     attribute "bprm->filename" not found in structure "linux_binprm"。
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: acme-agent-enforcement
+spec:
+  podSelector:
+    matchLabels:
+      projectcapsule.dev/tenant: acme
+  lsmhooks:
+    - hook: "bprm_check_security"
+      message: "aisanbox:denied-by-platform-policy"
+      args:
+        - {index: 0, type: linux_binprm}
+      selectors:
+        # 官方写法(cilium/tetragon examples/tracingpolicy/lsm_bprm_check.yaml):
+        # 在 bprm_check_security 上，要匹配"即将被执行的目标"必须用 matchArgs
+        # 去匹配已解析出的 filename；matchBinaries 匹配的是调用者进程。
+        - matchArgs:
+            - {index: 0, operator: Prefix, values: ["/bin/sleep", "/usr/bin/sleep"]}
+          matchActions:
+            # Override + argError: exec 被内核直接拒绝，调用方 shell 仍存活
+            # —— 适合作为"最小破坏"的租户运行时策略
+            - {action: Override, argError: -1}

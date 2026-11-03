@@ -1,0 +1,49 @@
+# ---------------------------------------------------------------------------
+# 2) 危险文件操作
+# 实测注意: 参数下标跟架构相关。arm64 的 sys_openat(dirfd, filename, flags)
+#   filename 是 index 1；x86_64 上同样(index 1)，但很多公开例子写 index 2 是
+#   sys_open 的旧写法。跨架构部署前请先用一条只带 args 的探测策略确认。
+# 实测命中样例: /etc/hosts、/etc/resolv.conf、/etc/localtime、/proc/1/*
+# 顺带说明分层: /etc 的**写**已经被 runAsNonRoot + drop ALL 挡住(实测
+#   touch /etc/_t -> Permission denied)，所以这里的价值是"看见读与尝试写"，
+#   以及捕获 /sandbox、/tmp 里 agent 真正能写的区域。
+# ---------------------------------------------------------------------------
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: agent-dangerous-fs
+  labels: {aisanbox.io/pack: agent-visibility}
+spec:
+  podSelector:
+    matchLabels: {projectcapsule.dev/tenant: acme}
+  kprobes:
+    # 读配置/凭据目录: 凭据外泄与配置读取的可见性
+    - call: "sys_openat"
+      syscall: true
+      message: "agent:open-sensitive"
+      args: [{index: 1, type: string}, {index: 2, type: int}]
+      selectors:
+        - matchArgs:
+            - index: 1
+              operator: Prefix
+              values:
+                - "/etc/"
+                - "/root/"
+                - "/var/run/secrets/"
+                - "/proc/1/"
+                - "/.openshell/"
+      tags: ["filesystem", "secrets"]
+    # 删除文件: agent 误删/清库等破坏性动作(实测命中 /tmp/x1)
+    - call: "sys_unlinkat"
+      syscall: true
+      message: "agent:file-delete"
+      args: [{index: 1, type: string}]
+      tags: ["filesystem", "destructive"]
+    # 移动/覆盖: agent 把文件搬到工作区外
+    # 实测坑: glibc 的 rename() 走 **sys_renameat**(dirfd,old,newdirfd,new)，
+    # 用 sys_rename(index 0/1) 不会触发; 这条改完实测命中 /tmp/a -> /tmp/b。
+    - call: "sys_renameat"
+      syscall: true
+      message: "agent:rename"
+      args: [{index: 1, type: string}, {index: 3, type: string}]
+      tags: ["filesystem", "destructive"]

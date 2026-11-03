@@ -1,0 +1,54 @@
+# ---------------------------------------------------------------------------
+# 3) 供应链: agent 自己改运行环境(装包/改包/换二进制)
+# 必须用 lsmhooks + matchArgs(不是 kprobes, 不是 matchBinaries):
+#   - kprobes(sys_execve) + matchBinaries 匹配的是"调用者"(那时还是 sh) -> 不命中
+#   - bprm_check_security 上新目标即将获得权限 -> 用 matchArgs(index 0) 匹配已解析路径
+#   - 匹配的是**解析后的真实路径**: Alpine /bin/sleep -> /bin/busybox
+# 实测: 命中 pip; 该策略也验证了 Override 强制能用(见 40-enforce-*.yaml)
+# 注意: 一个 TracingPolicy 只能有一个 section(kprobes 或 lsmhooks)，混用会
+#   报 "tracing policies with multiple sections ... are not supported"，且整条策略不加载。
+# ---------------------------------------------------------------------------
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: agent-supply-chain
+  labels: {aisanbox.io/pack: agent-visibility}
+spec:
+  podSelector:
+    matchLabels: {projectcapsule.dev/tenant: acme}
+  lsmhooks:
+    - hook: "bprm_check_security"
+      message: "agent:package-manager"
+      args: [{index: 0, type: linux_binprm}]
+      selectors:
+        - matchArgs:
+            - index: 0
+              operator: Prefix
+              values:
+                - "/usr/local/bin/pip"
+                - "/usr/bin/pip"
+                - "/bin/apk"
+                - "/usr/bin/apk"
+                - "/usr/bin/npm"
+                - "/usr/local/bin/npm"
+                - "/usr/bin/dnf"
+                - "/usr/bin/apt-get"
+      tags: ["supply-chain"]
+---
+# 3b) 越权提权动作(agent 试图改身份/能力)
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: agent-privilege-change
+  labels: {aisanbox.io/pack: agent-visibility}
+spec:
+  podSelector:
+    matchLabels: {projectcapsule.dev/tenant: acme}
+  kprobes:
+    # 实测: sh -c 之类的进程启动即产生 setuid 事件(14 次)，
+    # 说明它噪声较高; 生产建议配 matchCapabilities 或只在审计通道开启。
+    - call: "sys_setuid"
+      syscall: true
+      message: "agent:setuid-attempt"
+      args: [{index: 0, type: int}]
+      tags: ["privilege", "noisy"]
