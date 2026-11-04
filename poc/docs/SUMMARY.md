@@ -143,6 +143,7 @@ openshell --workspace acme policy get try1     # 生效策略 + hash + 版本
 |---|---|---|
 | [`index.html`](index.html) | 第一次了解的人 | 一页看懂：结论、四层、数字、缺口 |
 | `SUMMARY.md` | 要文字版的人 | 本页，简版结论 |
+| [`DEMO.md`](DEMO.md) | 要亲手搭 / 演示的人 | 17 步手工命令，每步带预期输出 |
 | [`architecture.html`](architecture.html) | 要动手接的人 | 详细架构、配置、策略基线、9 条写策略规则 |
 | [`FINDINGS.md`](FINDINGS.md) | 要核对证据的人 | 第一轮逐项验证、报错原文、未定论项 |
 

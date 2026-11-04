@@ -450,7 +450,7 @@ agent:listen           saddr=0.0.0.0:31339</pre>
   <!-- 06 -->
   <section id="start">
     <div class="sec-head"><span class="sec-no">06</span><h2>三步复现</h2></div>
-    <p class="lede">前提：Docker 至少 8 GiB（两个 kind 集群常驻约 2.5–3 GiB）、已装 kind / kubectl / helm，内核有 BTF（Docker Desktop 6.12 满足）。</p>
+    <p class="lede">前提：Docker 至少 8 GiB（两个 kind 集群常驻约 2.5–3 GiB）、已装 kind / kubectl / helm，内核有 BTF（Docker Desktop 6.12 满足）。想一步步手工敲、边搭边讲，看 <a href="DEMO.md">DEMO.md</a>；下面是快路径。</p>
 
     <div class="steps">
       <div class="step">
@@ -486,12 +486,13 @@ openshell --workspace acme policy get try1   <span class="c"># 生效策略 + ha
       <div class="tr"><code>observability/</code><span>跨集群抓取配置</span></div>
       <div class="tr"><code>usage/</code><span>开通脚本 · 观测手册</span></div>
       <div class="tr"><code>scripts/</code><span>bootstrap.sh · bench-latency.py</span></div>
-      <div class="tr"><code>docs/</code><span>index.html（本页）· SUMMARY.md · architecture.html · FINDINGS.md</span></div>
+      <div class="tr"><code>docs/</code><span>index.html（本页）· DEMO.md · SUMMARY.md · architecture.html · FINDINGS.md</span></div>
     </div>
   </section>
 
   <div class="foot">
     <div class="links">
+      <a href="DEMO.md">手工 Demo 步骤 <span>DEMO.md</span></a>
       <a href="SUMMARY.md">文字简版 <span>SUMMARY.md</span></a>
       <a href="architecture.html">详细架构与配置 <span>architecture.html</span></a>
       <a href="FINDINGS.md">逐项验证记录与踩坑 <span>FINDINGS.md</span></a>

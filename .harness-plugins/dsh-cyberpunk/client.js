@@ -232,7 +232,7 @@ window.__ModuleLoader__.load({
      * @returns the status row.
      */
     function NeonStatus(props) {
-      const t = props.t;
+      const t = props === undefined ? undefined : props.t;
       const label = typeof t === 'function' ? t('dock.online') : 'NEON LINK ACTIVE';
       return h(
         React.Fragment,

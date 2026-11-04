@@ -8,6 +8,7 @@
 | 想知道什么 | 看哪里 |
 |---|---|
 | 一页看懂（推荐从这里开始） | [`poc/docs/index.html`](poc/docs/index.html) |
+| 按步骤手工搭一遍（演示 / 排障） | [`poc/docs/DEMO.md`](poc/docs/DEMO.md) |
 | 文字版结论 | [`poc/docs/SUMMARY.md`](poc/docs/SUMMARY.md) |
 | 详细架构、配置、策略规则 | [`poc/docs/architecture.html`](poc/docs/architecture.html) |
 | 逐项验证记录与踩坑 | [`poc/docs/FINDINGS.md`](poc/docs/FINDINGS.md) |
