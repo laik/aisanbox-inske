@@ -33,8 +33,11 @@ kubectl --context $A create ns acme   --as=alice --as-group=tenant-acme   || tru
 kubectl --context $A create ns globex --as=bob   --as-group=tenant-globex || true
 
 echo "### 5/6 plane-a: Tetragon(需要 BTF 内核; Docker Desktop 6.12 满足)"
+# 用 poc/tetragon/values.yaml 里的 daemon 配置：默认安装缺 parents-map / process-cred /
+# process-ns / ancestors 这几个开关，matchParentBinaries 等能力会直接加载失败。
 helm repo add cilium https://helm.cilium.io >/dev/null && helm repo update >/dev/null
-helm --context $A upgrade --install tetragon cilium/tetragon --version $VER_TETRAGON -n kube-system --wait --timeout 6m
+helm --context $A upgrade --install tetragon cilium/tetragon --version $VER_TETRAGON -n kube-system \
+  -f tetragon/values.yaml --wait --timeout 6m
 
 echo "### 6/6 plane-a: OpenShell gateway(operator 模式) + 每个租户 ns 的 workspace 前置"
 TMP=$(mktemp -d)
@@ -57,6 +60,21 @@ echo "### 租户侧安全策略由 Capsule GlobalTenantResource 自动下发(单
 kubectl --context $A apply -f capsule/global-tenant-resource.yaml
 for f in tetragon/policies/*.yaml; do kubectl --context $A apply -f "$f"; done
 kubectl --context $A apply -f agent-sandbox/warmpool-acme.yaml
+
+echo "### agent 侧观测后端(Jaeger + 模型出口) + 让沙箱真的能出去"
+# 这两份是 2026-11-06 第二轮实测补上的，缺一不可：
+#   observability/trace-backend.yaml  收 OTLP 的 Jaeger，以及"租户模型网关"的替身
+#   agent/egress-allow.yaml           没有它，沙箱的 egress 只有 DNS，什么都连不上
+kubectl --context $A create ns observability --dry-run=client -o yaml | kubectl --context $A apply -f -
+kubectl --context $A apply -f observability/trace-backend.yaml
+# 模型上游默认是宿主机上的端点；换成真实网关就改这两行(或部署后再 kubectl set env)。
+MODEL_UPSTREAM_HOST=${MODEL_UPSTREAM_HOST:-host.docker.internal}
+MODEL_UPSTREAM_PORT=${MODEL_UPSTREAM_PORT:-15721}
+kubectl --context $A -n observability set env deploy/model-egress \
+  MODEL_UPSTREAM_HOST=$MODEL_UPSTREAM_HOST MODEL_UPSTREAM_PORT=$MODEL_UPSTREAM_PORT
+kubectl --context $A apply -f agent/egress-allow.yaml
+kubectl --context $A -n observability rollout status deploy/jaeger --timeout=180s || true
+kubectl --context $A -n observability rollout status deploy/model-egress --timeout=120s || true
 
 echo "### 观测栈放在 plane-b(平台集群)，抓 plane-a 的 NodePort 指标"
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts >/dev/null && helm repo update >/dev/null

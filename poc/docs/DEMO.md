@@ -227,8 +227,14 @@ helm repo add cilium https://helm.cilium.io --force-update
 helm repo update
 
 helm --context $A upgrade --install tetragon cilium/tetragon \
-  --version 1.8.0 -n kube-system --wait --timeout 6m
+  --version 1.8.0 -n kube-system -f tetragon/values.yaml --wait --timeout 6m
 ```
+
+`tetragon/values.yaml` 打开四个开关：`enableProcessCred` / `enableProcessNs` /
+`processAncestors` / `--parents-map-enabled`。**不打开的话第 9 步的一部分策略会直接加载失败**
+（`matchParentBinaries selector can be used only with parents map enabled`），
+并且"按能力/按命名空间/按祖先进程"这几类 selector 没有数据可匹配。
+`--parents-map-enabled` 在 chart 里没有对应 values，只能走 `extraArgs`。
 
 检查：
 
@@ -418,6 +424,34 @@ max by (tenant, resource) (
 > 讲这里：`--set-file` 是必须的——`extraScrapeConfigs` 传字符串，传布尔会类型错误。改完 ConfigMap 老 Pod 不会自动 reload，需要 `kubectl -n monitoring rollout restart deploy/prometheus-server`。
 
 ---
+
+## 10b. 让沙箱真的能出去，并给它一个收 trace 的后端（plane-a）
+
+这一步是 2026-11-06 第二轮补的，**少了它 agent 类工作负载基本连不上任何东西**：
+
+```bash
+kubectl --context $A create ns observability --dry-run=client -o yaml | kubectl --context $A apply -f -
+kubectl --context $A apply -f observability/trace-backend.yaml   # Jaeger(OTLP 4318, UI 16686) + 一个模型出口
+kubectl --context $A -n observability rollout status deploy/jaeger --timeout=180s
+
+kubectl --context $A apply -f agent/egress-allow.yaml           # 关键：放行沙箱出网
+```
+
+**为什么必须有 `agent/egress-allow.yaml`**（实测，见 FINDINGS §R2.4）：
+`openshell-workspace` 装的 `openshell-sandbox-workloads` 是 `policyTypes: [Ingress, Egress]`
+但 **egress 一条都没有** —— 它对"允许出网"的贡献是 0。NetworkPolicy 是按 pod 取并集，
+于是沙箱的真实 egress 只有 `capsule-<tenant>-0` 给的 DNS。结果：沙箱连自己配对的 supervisor 都超时，
+任何 in-cluster Service 也连不上。模型调用和 OTLP 导出全部挂在那里超时。
+
+验证（应该全部通过）：
+
+```bash
+kubectl --context $A -n observability get pods -o wide      # jaeger + model-egress 都 Running
+kubectl --context $A -n acme get networkpolicy              # 有 aisanbox-agent-egress / aisanbox-sandbox-to-supervisor
+```
+
+> 模型上游默认指宿主机的 `host.docker.internal:15721`。换成真实网关：
+> `kubectl --context $A -n observability set env deploy/model-egress MODEL_UPSTREAM_HOST=… MODEL_UPSTREAM_PORT=443`
 
 ## 11. 创建第一个沙箱（需要 `openshell` CLI）
 
@@ -712,6 +746,7 @@ rm -rf vendor
 | 7–8 | `### 6/6 OpenShell gateway + workspace` |
 | 9 | `### 租户侧安全策略…` |
 | 10 | `### 观测栈放在 plane-b…` |
+| 10b | `### agent 侧观测后端(Jaeger + 模型出口)…`（脚本里排在策略下发之后、plane-b 之前） |
 | 11–16 | 脚本不包含，属于演示动作 |
 
 > 两边版本号是同一组：agent-sandbox v1.0.9 / Capsule 0.15.2 / Tetragon 1.8.0 / OpenShell 0.1.4。改一边记得改另一边。

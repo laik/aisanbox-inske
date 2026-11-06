@@ -1,0 +1,43 @@
+# ---------------------------------------------------------------------------
+# 7) 按"参数"而不只是按"二进制"拦 —— 补第一轮基线的一个真实缺口
+#
+# 实测发现(2026-11-06，由本 POC 的 demo agent 自己撞出来):
+#   基线 50-enforce-exec.yaml 用 lsm bprm + matchArgs 禁掉了 /usr/local/bin/pip，
+#   于是 `pip install requests` 被拒(exit 126 / "Operation not permitted"，~0.1s 返回)。
+#   agent 随即换路: `python3 -m pip install requests` —— **成功**。
+#   解释器本身在允许范围内，包管理器只是它的 -m 参数。
+#   内核层两次都记下了(见 /var/log/tetragon 里 arguments="-c \"pip install requests\"" 那条)。
+#
+# 结论: 这不是策略写错，是"按可执行文件建白名单"这种建模的固有边界。
+# 把规则从"哪个二进制"升级成"哪个二进制 + 什么参数"就补得上。
+#
+# matchCmdArgs 语义(CRD 原文): index 从 0 开始，**不含 argv[0]** —— argv[0] 由 binary 表示。
+# 所以 `python3 -m pip install x` 里 arg0="-m", arg1="pip", arg2="install"。
+# 同一个 selector 内 matchArgs 与 matchCmdArgs 是 AND。
+# ---------------------------------------------------------------------------
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: agent-module-pkgmgr
+  labels: {aisanbox.io/pack: agent-enforcement, aisanbox.io/tier: baseline}
+spec:
+  podSelector:
+    matchLabels: {projectcapsule.dev/tenant: acme}
+  lsmhooks:
+    - hook: "bprm_check_security"
+      message: "agent:exec-denied-module-pkgmgr"
+      args: [{index: 0, type: linux_binprm}]
+      selectors:
+        - matchArgs:
+            - index: 0
+              operator: Prefix
+              values: ["/usr/local/bin/python", "/usr/bin/python"]
+          matchCmdArgs:
+            - index: 0
+              operator: Equal
+              values: ["-m"]
+            - index: 1
+              operator: Equal
+              values: ["pip", "venv", "ensurepip"]
+          matchActions: [{action: Override, argError: -1}]
+      tags: ["enforce", "supply-chain", "argv"]

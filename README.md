@@ -8,6 +8,9 @@
 | 想知道什么 | 看哪里 |
 |---|---|
 | 一页看懂（推荐从这里开始） | [`poc/docs/index.html`](poc/docs/index.html) |
+| **在做什么 / 为什么这么做 / 收益与边界**（文字版总结） | [`poc/docs/RECAP.md`](poc/docs/RECAP.md) |
+| **跑一遍 agent：应用 trace + 内核记录同时看（录视频用）** | [`poc/usage/03-agent-otel-demo.sh`](poc/usage/03-agent-otel-demo.sh) |
+| agent 怎么写才既好观测又不越界 | [`poc/agent/`](poc/agent/)（`agent.py` · `policy.yaml` · `Dockerfile`） |
 | 按步骤手工搭一遍（演示 / 排障） | [`poc/docs/DEMO.md`](poc/docs/DEMO.md) |
 | 文字版结论 | [`poc/docs/SUMMARY.md`](poc/docs/SUMMARY.md) |
 | 详细架构、配置、策略规则 | [`poc/docs/architecture.html`](poc/docs/architecture.html) |
@@ -18,6 +21,9 @@
 - **能跑通**：`openshell sandbox create` → agent 以非 root（uid 10001）执行命令，配额 / 网络边界 / 策略 / 审计全部生效。
 - **够快**：预热池认领到就绪 **0.25 s**；冷启动 0.92 s（镜像已在节点）/ 15.98 s（要拉 20 MB 镜像）。
 - **看得见**：agent 每次出网、起 shell、装包都带租户 / 命名空间 / 二进制名，能按"哪个程序连哪个地址"在内核层当场拦。
+- **两侧对得上，且不需要对接代码**（2026-11-06）：一个只发标准 OTLP 的 agent，它的 trace（模型调用 / token / tool call）
+  与内核记录的同一批 exec 天然对齐 —— 同一个 pod、同一个 uid、同一条命令行。越界的连接被内核 **0.01 s** 拒掉，
+  同样的连接只靠 NetworkPolicy 拦则是**静默丢包**（实测到 40 s 仍未返回，失败时间取决于 agent 自己的超时）。
 
 ## 技术栈
 
@@ -29,20 +35,26 @@ Capsule 0.15.2（租户合同）· agent-sandbox v1.0.9（沙箱本体）· Open
 ```bash
 bash poc/scripts/bootstrap.sh              # 重建两个 kind 集群与全部组件（约 10 分钟，Docker ≥ 8 GiB）
 bash poc/usage/01-onboard-tenant.sh acme   # 给一个租户开通 sandbox 能力
+
+# 演示 agent（需要 ANTHROPIC_AUTH_TOKEN 或一个可用的模型端点）
+docker build -t aisanbox-agent:0.4 -f poc/agent/Dockerfile poc/agent
+kind load docker-image aisanbox-agent:0.4 --name inske-plane-a
+TUTOR_MODE=1 bash poc/usage/03-agent-otel-demo.sh   # 每拍停顿，适合录屏
 ```
 
 ## 目录
 
 ```
 poc/
-├── docs/          index.html · SUMMARY.md · architecture.html · FINDINGS.md
+├── docs/          index.html · RECAP.md · DEMO.md · SUMMARY.md · architecture.html · FINDINGS.md
+├── agent/         可观测的 agent（OTel + Anthropic SDK）· 它的沙箱策略 · 出口放行
 ├── kind/          两个集群配置
 ├── capsule/       租户 / owner / 策略自动下发
 ├── openshell/     operator 模式接线
 ├── agent-sandbox/ 预热池 + 认领
 ├── tetragon/      策略基线（已验证） + 实验证据
-├── observability/ 跨集群抓取
-├── usage/         开通脚本 · 观测手册
+├── observability/ 跨集群抓取 · Jaeger + 模型出口
+├── usage/         开通脚本 · 观测手册 · agent 演示脚本
 └── scripts/       bootstrap.sh · bench-latency.py
 ```
 

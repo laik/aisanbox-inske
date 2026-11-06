@@ -1,0 +1,53 @@
+# OpenShell sandbox policy for the aisanbox demo agent.
+#
+# Two rules and nothing else. Two things worth knowing before you copy this:
+#
+#  * `binaries` must list the REAL executable path as the kernel reports it —
+#    OpenShell's own docs say so (a rule for `pip install` must name the
+#    interpreter, and `/usr/bin/python3` is a symlink to `python3.12`).
+#    Caveat measured here: for **L4** rules (no `protocol:`) the binary list is
+#    not a gate at all — a rule naming only `/bin/tar` still let python3.12
+#    connect. So write real paths for L7 rules, and don't count on `binaries`
+#    to stop a process from reaching an L4 endpoint; that is Tetragon's job
+#    (see poc/docs/FINDINGS.md §R2.3).
+#  * Don't add a `filesystem_policy` you don't need. When one is absent,
+#    OpenShell enriches the policy with a baseline (visible in
+#    `openshell policy get <sb> --base`): /bin /usr /lib /proc /dev/urandom
+#    /etc /var/log read-only, /tmp /dev/null read-write. That baseline is
+#    correct for a Python agent, and it does NOT include wherever you happened
+#    to COPY your script —— so keep the script under /usr (as this image does)
+#    or list your own path.
+#
+# What is deliberately NOT here: no wildcard egress, and nothing beyond those
+# two endpoints. The model credential is passed at create time (--env-from),
+# never baked into the image.
+#
+# Endpoints below are IP literals, not Service DNS names. Reason: the sandbox's
+# DNS path to the supervisor's policy resolver is broken in this POC, so any
+# hostname fails before the L7 layer is reached (poc/docs/FINDINGS.md §R2.4).
+# Generate a usable copy with:
+#
+#   MJ=$(kubectl --context kind-inske-plane-a -n observability get svc jaeger -o jsonpath='{.spec.clusterIP}')
+#   ME=$(kubectl --context kind-inske-plane-a -n observability get svc model-egress -o jsonpath='{.spec.clusterIP}')
+#   sed -e "s|__JAEGER__|$MJ|" -e "s|__MODEL__|$ME|" poc/agent/policy.yaml | \
+#     openshell --workspace acme sandbox create --name x --policy /dev/stdin ...
+#
+# Once the DNS path is fixed, replace __JAEGER__ / __MODEL__ with
+# jaeger.observability.svc.cluster.local / model-egress.observability.svc.cluster.local
+# and the rules become name-based, which is what you want in production.
+version: 1
+network_policies:
+  model_egress:
+    name: "tenant LLM egress"
+    endpoints:
+      - host: __MODEL__
+        port: 18080
+    binaries:
+      - path: /usr/local/bin/python3.12
+  trace_export:
+    name: "otel collector"
+    endpoints:
+      - host: __JAEGER__
+        port: 4318
+    binaries:
+      - path: /usr/local/bin/python3.12

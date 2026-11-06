@@ -1,0 +1,84 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: jaeger, namespace: observability}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: jaeger}}
+  template:
+    metadata: {labels: {app: jaeger}}
+    spec:
+      containers:
+        - name: jaeger
+          image: cr.jaegertracing.io/jaegertracing/jaeger:2.19.0
+          imagePullPolicy: IfNotPresent
+          ports: [{containerPort: 4318}, {containerPort: 16686}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: jaeger, namespace: observability}
+spec:
+  selector: {app: jaeger}
+  ports: [{name: otlp, port: 4318, targetPort: 4318}, {name: ui, port: 16686, targetPort: 16686}]
+  type: NodePort
+  ports: [{name: otlp, port: 4318, targetPort: 4318, nodePort: 31681}, {name: ui, port: 16686, targetPort: 16686, nodePort: 31682}]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: model-egress, namespace: observability}
+data:
+  fwd.py: |
+    import os, socket, threading
+    # 默认指到宿主机上的模型端点(kind 节点里 host.docker.internal 可解析)。
+    # 换成真实网关: kubectl -n observability set env deploy/model-egress \
+    #   MODEL_UPSTREAM_HOST=api.example.com MODEL_UPSTREAM_PORT=443
+    UP = (os.environ.get("MODEL_UPSTREAM_HOST", "host.docker.internal"),
+          int(os.environ.get("MODEL_UPSTREAM_PORT", "15721")))
+    PORT = 18080
+    def pipe(a, b):
+        try:
+            while True:
+                d = a.recv(65536)
+                if not d: break
+                b.sendall(d)
+        except Exception: pass
+        finally:
+            try: b.shutdown(socket.SHUT_WR)
+            except Exception: pass
+    def handle(c):
+        try: u = socket.create_connection(UP, timeout=10)
+        except Exception as e:
+            print("upstream fail", e, flush=True); c.close(); return
+        threading.Thread(target=pipe, args=(c, u), daemon=True).start()
+        pipe(u, c); c.close(); u.close()
+    s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(("0.0.0.0", PORT)); s.listen(64)
+    print("model egress :18080 ->", UP, flush=True)
+    while True:
+        c, _ = s.accept(); threading.Thread(target=handle, args=(c,), daemon=True).start()
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: model-egress, namespace: observability}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: model-egress}}
+  template:
+    metadata: {labels: {app: model-egress}}
+    spec:
+      containers:
+        - name: fwd
+          image: python:3.12-alpine
+          command: ["python3", "/etc/fwd/fwd.py"]
+          env:
+            - {name: MODEL_UPSTREAM_HOST, value: "host.docker.internal"}
+            - {name: MODEL_UPSTREAM_PORT, value: "15721"}
+          ports: [{containerPort: 18080}]
+          volumeMounts: [{name: cm, mountPath: /etc/fwd}]
+      volumes: [{name: cm, configMap: {name: model-egress}}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: model-egress, namespace: observability}
+spec:
+  selector: {app: model-egress}
+  ports: [{name: http, port: 18080, targetPort: 18080}]

@@ -1,0 +1,72 @@
+# Platform-side egress for sandbox workloads, toward the tenant's observability /
+# model-egress services. Without it, an agent-type workload can barely reach anything.
+#
+# Why this file exists (实测, 2026-11-06): the openshell-workspace chart installs
+# `openshell-sandbox-workloads` with policyTypes [Ingress, Egress] and **no egress
+# rules**, i.e. that policy contributes *zero* allowed egress. NetworkPolicy is a
+# per-pod union, so a sandbox's actual egress was
+#   capsule-<tenant>-0 (DNS -> kube-system:53)  ∪  openshell (nothing)
+# Measured on a live sandbox, before this file:
+#   -> its own supervisor  :53/:5500/:5501     TimeoutError
+#   -> an in-cluster Service ClusterIP         TimeoutError
+#   -> CoreDNS 10.96.0.10:53 (the only allow) OK
+# So the agent's model call and its OTLP export both just hang until timeout.
+# Nothing in OpenShell's policy layer can fix this, because that layer sits *above*
+# the packet filter.
+#
+# Keep this narrow: name the destination namespace and the exact ports.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: aisanbox-agent-egress
+  namespace: acme
+  labels: {app.kubernetes.io/part-of: aisanbox-poc}
+spec:
+  podSelector:
+    matchLabels: {openshell.ai/boundary-role: workload}
+  policyTypes: [Egress]
+  egress:
+    # OTLP trace export + the tenant's model egress gateway.
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: observability}
+      ports:
+        - {protocol: TCP, port: 4318}
+        - {protocol: TCP, port: 18080}
+---
+# Allow the sandbox to reach the supervisor it is paired with.
+#
+# This is one candidate cause for the sandbox-DNS gap (FINDINGS §06 / §R2.4): the
+# stub resolver at 127.0.0.53 is local, but answering a name needs the supervisor's
+# policy DNS, and no policy allowed workload -> supervisor.
+#
+# Honest status: adding this rule **did not** make name resolution work. Retested
+# after applying it:
+#   nslookup <svc>.observability.svc.cluster.local  ->  connection timed out
+#   socket.create_connection(<svc FQDN>, 4318)      ->  gaierror
+#   socket.create_connection(<ClusterIP>,   4318)   ->  OK
+# So the L3/L4 path here is necessary but not sufficient; something below the
+# NetworkPolicy layer is still missing and this POC has not located it. Keeping
+# the rule because the path is required either way. Practical consequence for the
+# demo: address observability and the model gateway by IP literal, and treat
+# "which name resolves to what" as a boundary-layer signal that is currently
+# unavailable —— documented, not hidden.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: aisanbox-sandbox-to-supervisor
+  namespace: acme
+  labels: {app.kubernetes.io/part-of: aisanbox-poc}
+spec:
+  podSelector:
+    matchLabels: {openshell.ai/boundary-role: workload}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {openshell.ai/boundary-role: supervisor}
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+        - {protocol: TCP, port: 5500}
+        - {protocol: TCP, port: 5501}

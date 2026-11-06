@@ -1,0 +1,39 @@
+# Tetragon 1.8.0 daemon config for this POC.
+# 每一项都对应一条已实测的策略能力 —— 默认安装**没有**这些，
+# 于是若干"更深层"的策略会在加载时报错或被静默忽略。
+#
+# 实测对应关系(2026-11-06，全部在 kind / 内核 6.12.72 上验证):
+#
+#   parents-map-enabled
+#     打开前: 任何用了 matchParentBinaries 的策略**加载失败**:
+#       "matchParentBinaries selector can be used only with parents map enabled"
+#     打开后: 同一条策略加载成功。注意 chart 里没有这个开关，
+#     只能通过 extraArgs 传(`--parents-map-enabled`，值为空即布尔开)。
+#
+#   enable-process-cred / enable-process-ns
+#     让事件带上进程能力(capability)与命名空间信息，matchCapabilities /
+#     matchNamespaces 这类 selector 才有意义。
+#
+#   processAncestors (enable-ancestors)
+#     祖先进程链。要按"谁启动了谁"归因(例如 python 起了 sh)就需要它。
+#     注意值必须是逗号分隔的字符串，helm --set 里要转义成 base\,kprobe\,lsm。
+#
+#   enable-process-environment-variables —— **这条是失败记录，保留以免再踩**
+#     开之后(也配了 filter-environment-variables=TRACEPARENT)，
+#     1.8.0 的 PROCESS_EXEC 事件里 **没有 process_env 字段**:
+#       grep -c process_env /var/log/tetragon/tetragon.log  ->  0
+#     日志里的 config map 确实显示 enable-process-environment-variables:true，
+#     所以不是没生效于启动参数，而是这个版本不导出该字段。
+#     => 想用 trace id 把内核记录和应用 trace 关联起来，当前可用的办法是
+#        **把 id 放进 argv**(arguments 字段一定会导出)，实测 kernel 记录里
+#        原样出现: arguments: "tid=6cb99dc62fa84f419727198f93787076"。
+#        见 poc/usage/03-demo-views.py。
+tetragon:
+  enableProcessCred: true
+  enableProcessNs: true
+  processAncestors:
+    enabled: base,kprobe,lsm
+  extraArgs:
+    parents-map-enabled: ""
+    # 保留但**不要依赖**它输出内容，见上面注释
+    enable-process-environment-variables: ""
