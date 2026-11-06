@@ -1,0 +1,22 @@
+# 只忽略这个仓库真的会产生、且不该提交的东西。不要放通用模板条目 ——
+# 条目多了以后，没人分得清"这是有意忽略的"还是"手滑漏掉的"。
+
+# 本机确实有这两个文件。你(个人)的全局 core.excludesFile 已经忽略它们，
+# 所以它们从没进过 git；这里再写一遍是为了换台机器/别人 clone 行为一致。
+.DS_Store
+
+# poc/usage/01-onboard-tenant.sh 的 WS_CHART 默认值是 ./vendor/openshell-workspace，
+# 而那个脚本的其它路径(./poc/tetragon/policies/…)只能从**仓库根**解析 —— 所以它默认落在
+# 仓库根的 vendor/ 下（openshell-workspace 子 chart 用 helm pull / curl 取到本地）。
+# 只匹配根目录，写成 /vendor/ 以免误伤将来真正的依赖目录。
+/vendor/
+
+# poc/agent/*.py、poc/scripts/*.py、poc/usage/*.py 直接跑时会产生
+__pycache__/
+*.py[cod]
+
+# 防御性的一条，**目前仓库不会生成它**：demo 用 `--env-from ANTHROPIC_AUTH_TOKEN`
+# 从环境变量取模型 token，不读 .env。加这条只是防止哪天图省事把密钥写成文件就提交了。
+.env
+.env.*
+!.env.example
