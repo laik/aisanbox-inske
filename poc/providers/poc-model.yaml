@@ -1,0 +1,42 @@
+# POC2 §10.1: "模型服务使用一个可通过 OpenShell Provider 访问的 OpenAI-compatible
+# 或 Anthropic-compatible Endpoint。"
+#
+# 实测前提(和直觉不同，值得记下来): OpenShell **不把任何 provider profile 编进发行版**。
+# 源码 crates/openshell-providers/src/example_profiles.rs 的注释写得很直接:
+#   "OpenShell does not compile any provider profile into a release binary. The
+#    YAML under providers/ is reviewable example data that an operator imports
+#    explicitly."
+# 所以 `provider create --type openai` 必然报
+#   provider profile 'openai' not found; import a matching profile before
+# —— 不是 bug，是设计: 平台必须自己声明"允许哪个主机、哪个二进制能去"。
+#
+# providers/openai.yaml 的注释还特别说: 如果是**另一个主机上的 OpenAI 兼容服务**，
+# 要**另建一个 profile 命名那个主机**，不要改那个官方的。我们这里就是这个情况
+# (宿主上的 strata 服务，OpenAI 兼容)。
+id: poc-model
+display_name: PoC model (OpenAI-compatible, on the host)
+description: OpenAI-compatible inference endpoint used by this PoC (strata/llama.cpp on the Kind host)
+category: inference
+inference_capable: true
+credentials:
+  - name: api_key
+    description: API key for the OpenAI-compatible endpoint
+    env_vars: [OPENAI_API_KEY]
+    required: true
+    auth_style: bearer
+    header_name: authorization
+# 实测要点: **pod 能到的地址**是宿主的 LAN IP(192.168.5.190)，不是
+# 127.0.0.1、也不是 host.docker.internal(kind 节点里没有这个 DNS)。
+# 172.17.0.1(docker0)也能通，但用 LAN IP 更稳，也和 POC2 的外部访问一致。
+endpoints:
+  - host: 192.168.5.190
+    port: 8080
+    protocol: rest
+    access: read-write
+    enforcement: enforce
+# binaries 是**最小权限**的关键: 只有这些路径的进程能访问上面的 endpoint。
+# pi 是 node 进程(node:24 镜像里 node 在 /usr/local/bin/node)，所以必须列 node;
+# curl 留着做冒烟测试。列错路径 = 连接被拒，而报错读起来像网络问题。
+binaries:
+  - /usr/local/bin/node
+  - /usr/bin/curl

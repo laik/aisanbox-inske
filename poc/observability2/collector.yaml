@@ -1,0 +1,223 @@
+# POC2 §7.3 / §8 / §12 —— 统一遥测接入点。
+# 一个 OTel Collector 收三条流:
+#   OTLP/gRPC 4317  <- OpenShell gateway (POC2 §8.1)、supervisor 的 agent relay (§8.2)
+#   OTLP/HTTP 4318  <- pi-otel (Pi 扩展默认走 gRPC，这里两种都开，避免"配错了"变成排查项)
+#   filelog        <- Tetragon 的 JSON 事件(POC2 §7.3 第一阶段方案)
+# 出口: traces -> Jaeger，logs -> Jaeger(作为 security log backend, 见注释)。
+# 内存: 明确写 requests/limits —— POC2 §3.5 对平台组件的要求同样适用于观测栈本身。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: observability
+data:
+  collector.yaml: |
+    receivers:
+      # 实测(0.155.0，两轮才定下来): receiver 的**实例名会被当成类型名**去解析。
+      # 写成 `otlp_grpc: {...}` / `otlp_http: {...}` 得到
+      #   unknown type: "otlp_grpc" for id: "otlp_grpc"
+      # —— 而那份 valid values 列表里确实**没有** otlp_grpc，只有 otlp。
+      # 所以这一版就是 `otlp:` 一个 receiver、两个 protocol。
+      # (想拆成两个实例的正确写法是 `otlp/grpc:` 和 `otlp/http:` 这种带斜杠的实例名；
+      #  但对 POC 来说一个 otlp receiver 就够了，少一处能出错的地方。)
+      otlp:
+        protocols:
+          grpc: {endpoint: 0.0.0.0:4317}
+          http: {endpoint: 0.0.0.0:4318}
+      # POC2 §7.3: 第一阶段用 filelog 读 Tetragon 的 JSON 输出，不自研 adapter。
+      file_log:
+        include: [/var/log/tetragon/tetragon.log]
+        start_at: end
+        retry_on_failure: {enabled: true}
+        operators:
+          - type: json_parser
+            on_error: send_quiet
+          # 把 Tetragon 的时间戳提到日志时间上，才能按时间做关联(POC2 §7.3)。
+          # 实测坑(0.155.0): parse_from 不能写裸字段名，会报
+          #   'parse_from' unrecognized prefix
+          # filelog 的 operator 链里，json_parser 解出来的字段挂在 **body** 下，
+          # 所以必须是 body.<字段>。(attributes.* / resource.* 是另外的前缀。)
+          - type: time_parser
+            parse_from: body.exit_time
+            layout_type: gotime
+            layout: "2006-01-02T15:04:05.999999999Z07:00"
+            on_error: send_quiet
+    processors:
+      batch: {}
+      memory_limiter: {check_interval: 5s, limit_percentage: 70, spike_limit_percentage: 20}
+      # 按 POC2 §12.1 补 Kubernetes 资源属性(租户/namespace/pod 的关联靠这一步)
+      # 在集群内跑时不需要 auth_type —— 默认就是 in-cluster 配置。
+      # 实测: 写 auth_type: kubeService 会得到
+      #   invalid authType for kubernetes: kubeService
+      # 直接不写这一项即可(0.155.0)。
+      k8s_attributes: {}
+    exporters:
+      # 主出口: 集群内 Jaeger。脚本断言查它的查询 API(/api/traces),
+      # 这样"证据"只依赖 kind 里的东西，复现步骤最短。
+      otlp:
+        endpoint: http://jaeger:4317
+        tls: {insecure: true}
+      # 演示出口: 宿主上已经在跑的 Tempo(→ Grafana)。
+      # 实测: pod 可以直达宿主的 LAN IP(见 providers/poc-model.yaml 里同样的结论),
+      # 不需要 host.docker.internal(kind 节点里没有这个 DNS)。
+      # 为什么要两个出口: Jaeger all-in-one 是**内存存储**，重启即清空(本轮真的丢过
+      # 两次证据);Tempo 在宿主上有持久卷，录屏/对外演示用它更稳。断言仍然只查 Jaeger,
+      # 所以多这一个出口不会让测试变脆。
+      # 实例名要用 **otlp/xxx** 这种带斜杠的形式。实测: 写成 `otlp_tempo:` 会得到
+      #   unknown type: "otlp_tempo" for id: "otlp_tempo"
+      # —— 和 receiver 那边同一个规则(见上面 receivers 的注释): 名字的第一段才是类型。
+      "otlp/tempo":
+        # 只引用**一个**环境变量 HOST_LAN_IP。
+        # 实测坑: 之前写 env TEMPO_ENDPOINT="$(HOST_LAN_IP):4317"，而 HOST_LAN_IP 定义在
+        # 它**后面** —— Kubernetes 的 dependent expansion 只解析**先定义**的变量，于是
+        # TEMPO_ENDPOINT 保持字面量 "$(HOST_LAN_IP):4317"，collector 一直
+        # "Exporting failed. Will retry…"，看起来像网络问题。
+        # 单变量就没有顺序问题。host IP 由 phases/10-observability.sh 探出来后写进来。
+        endpoint: "http://${HOST_LAN_IP}:4317"
+        tls: {insecure: true}
+      # verbosity=detailed: 把 span 名字与属性打进 collector 日志。
+      # 实测原因: basic 只打 "Traces # spanCount=N"，**不含数据内容**，
+      # 于是"Pi 的 trace 到没到"在日志里根本区分不出来(所有行的 resource 都是
+      # collector 自己的 otelcol-contrib)。POC 要的就是"能看见每条 trace 的
+      # 操作名与属性"(POC2 §6.3/§13.3)，所以这里要 detailed。
+      # 代价是日志量大 —— 生产上应该关掉 debug exporter，只留真正的后端。
+      debug: {verbosity: detailed}
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, batch, k8s_attributes]
+          exporters: [otlp, "otlp/tempo", debug]
+        logs:
+          # Tetragon 事件带 k8s 属性后进日志后端 = POC2 §7.3 的 security log backend
+          receivers: [otlp, file_log]
+          processors: [memory_limiter, batch, k8s_attributes]
+          exporters: [otlp, debug]
+        metrics:
+          receivers: [otlp]
+          processors: [memory_limiter, batch]
+          exporters: [debug]
+---
+# k8s_attributes 需要**读集群 API** 的权限。实测: 不写这一段时 collector 一直打
+#   failed to list *v1.Pod: pods is forbidden: User
+#   "system:serviceaccount:observability:default" cannot list resource "pods"
+# 而它**不会**因此退出 —— 只是 k8s.namespace.name / k8s.pod.name 这些属性全都补不上。
+# 后果正好打在 POC2 §12.1 上: 三种数据无法按租户/namespace 关联，而现场看起来
+# "trace 是有的"。这类"降级但不报错"的坑要主动查日志，不能只看健康检查。
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: otel-collector, namespace: observability}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: {name: otel-collector-k8s-attributes}
+rules:
+  # k8sattributesprocessor 需要 pod/node/namespace 的 get/list/watch。
+  # 只读、不写;范围是集群级(它要按 pod IP 反查身份)，生产上可用
+  # namespaceSelector/labelSelector 收窄 k8sattributes 的 `extract` 配置来减小面。
+  - apiGroups: [""]
+    resources: [pods, nodes, namespaces]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: {name: otel-collector-k8s-attributes}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: otel-collector-k8s-attributes}
+subjects: [{kind: ServiceAccount, name: otel-collector, namespace: observability}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: observability
+  labels: {app: otel-collector}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: otel-collector}}
+  template:
+    metadata: {labels: {app: otel-collector}}
+    spec:
+      serviceAccountName: otel-collector
+      containers:
+        - name: collector
+          image: otel/opentelemetry-collector-contrib:0.155.0
+          args: ["--config=/etc/otelcol/collector.yaml"]
+          # ${TEMPO_ENDPOINT} 由 OTel Collector 的配置解析器从环境变量展开。
+          # 实测: 展开语法就是 ${VAR}(和 shell 一样);写 ${env:VAR} 也支持。
+          # 用 env 而不是写死 IP: 换宿主时只改一处，manifest 本身可以照抄。
+          env:
+            # 由 phases/10-observability.sh 用 `ip route get 1.1.1.1` 探测后写入
+            # (和 01-cluster.sh 取 HOST_IP 的同一招)。这里写的是本轮环境的实际值 ——
+            # 换机器时脚本会改掉它，而不是让 manifest 里留一个看不出来的占位符。
+            - name: HOST_LAN_IP
+              value: "__HOST_LAN_IP__"
+          ports:
+            - {name: otlp-grpc, containerPort: 4317}
+            - {name: otlp-http, containerPort: 4318}
+          resources:
+            requests: {cpu: 100m, memory: 192Mi}
+            limits: {cpu: 500m, memory: 384Mi}
+          volumeMounts:
+            - {name: config, mountPath: /etc/otelcol}
+            # Tetragon 在节点上写的 JSON 事件文件(hostPath)。
+            # 这是 POC 的做法；生产用 DaemonSet 形态或 Tetragon 自己的 gRPC + adapter。
+            - {name: tetragon-logs, mountPath: /var/log/tetragon, readOnly: true}
+      volumes:
+        - name: config
+          configMap: {name: otel-collector-config}
+        - name: tetragon-logs
+          hostPath: {path: /var/log/tetragon, type: DirectoryOrCreate}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: otel-collector, namespace: observability}
+spec:
+  selector: {app: otel-collector}
+  ports:
+    - {name: otlp-grpc, port: 4317, targetPort: 4317}
+    - {name: otlp-http, port: 4318, targetPort: 4318}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: jaeger, namespace: observability, labels: {app: jaeger}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: jaeger}}
+  template:
+    metadata: {labels: {app: jaeger}}
+    spec:
+      containers:
+        - name: jaeger
+          # all-in-one: POC 用。生产应换成 Jaeger + 持久存储。
+          # 版本选择的**实测理由**(不是偏好): Jaeger **2.x**(2.19/2.22, 含 v2 架构的
+          # cr.jaegertracing.io/jaegertracing/jaeger)的查询 API 已经不在 /api/services
+          # —— 实测 /api/services、/api/v2/services 都是 404，只有 UI(/)和 /graph 在。
+          # 也就是说 UI 能看，但**脚本查不到**(本 POC 要按 §14 导出 trace JSON 作为证据)。
+          # 1.69.0 的 all-in-one 保留 /api/services 与 /api/traces，可脚本化，所以用它。
+          # → 这条要写进报告: 观测后端的**查询 API 是稳定的自动化接口**，选型时要按它选版本，
+          #   不能只看"UI 能打开"。
+          image: jaegertracing/all-in-one:1.69.0
+          env:
+            - {name: COLLECTOR_OTLP_ENABLED, value: "true"}
+          ports:
+            - {name: otlp-grpc, containerPort: 4317}
+            - {name: otlp-http, containerPort: 4318}
+            - {name: ui, containerPort: 16686}
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: 500m, memory: 640Mi}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: jaeger, namespace: observability}
+spec:
+  selector: {app: jaeger}
+  ports:
+    - {name: otlp-grpc, port: 4317, targetPort: 4317}
+    - {name: otlp-http, port: 4318, targetPort: 4318}
+    # 坑: flow mapping({...}) 后面不能再挂一个缩进键。写成
+    #   - {name: ui, ...}
+    #     nodePort: 31686
+    # 会得到 "did not find expected '-' indicator"，位置报告还指向别的文档。
+    - {name: ui, port: 16686, targetPort: 16686, nodePort: 31686}
+  type: NodePort

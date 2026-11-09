@@ -1,0 +1,17 @@
+# Capsule 0.15: TenantOwner 的 spec 只有 {kind,name,clusterRoles,aggregate}，
+# 归属关系由 metadata.labels["projectcapsule.dev/tenant"] 决定。
+# 第一版写成顶层 tenants:/owner: 被 API 以 strict decoding 拒绝 —— 记在这里避免重犯。
+# 带上 projectcapsule.dev/<tenant> 组的请求会拿到 capsule-namespace-provisioner。
+apiVersion: capsule.clastix.io/v1beta2
+kind: TenantOwner
+metadata:
+  name: tenant-a-owner
+  labels: {projectcapsule.dev/tenant: tenant-a}
+spec: {kind: Group, name: tenant-a-owners}
+---
+apiVersion: capsule.clastix.io/v1beta2
+kind: TenantOwner
+metadata:
+  name: tenant-b-owner
+  labels: {projectcapsule.dev/tenant: tenant-b}
+spec: {kind: Group, name: tenant-b-owners}

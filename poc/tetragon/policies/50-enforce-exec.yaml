@@ -14,7 +14,7 @@ metadata:
   labels: {aisanbox.io/pack: agent-enforcement}
 spec:
   podSelector:
-    matchLabels: {projectcapsule.dev/tenant: acme}
+    matchLabels: {projectcapsule.dev/tenant: tenant-a}
   lsmhooks:
     # 禁止 agent 起 bash(受控入口之外的解释器)。
     # 实测生效: pip / npm / bash 这类"真实独立文件"可以被精确拒绝

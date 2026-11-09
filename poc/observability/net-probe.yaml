@@ -1,0 +1,38 @@
+# 观测栈的"接入点是否通"探针。用来把两类假阴性分开:
+#   "没有 trace" = agent 没发  vs  接入点本身不通。
+# 用 pod 清单起(run --command 的引号在这种多步 curl 里很容易写错)。
+apiVersion: v1
+kind: Pod
+metadata:
+  name: net-probe
+  namespace: observability
+spec:
+  restartPolicy: Never
+  containers:
+    - name: c
+      image: curlimages/curl:8.10.1
+      command:
+        - sh
+        - -c
+        - |
+          set -e
+          echo "dns:"
+          nslookup "$SVC" 2>&1 | tail -2 || true
+          printf 'OTLP/HTTP via svc  -> '
+          curl -s -m 6 -o /dev/null -w '%{http_code}\n' \
+            -X POST "http://$SVC:4318/v1/traces" \
+            -H 'Content-Type: application/json' \
+            --data-binary '{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"selftest"}}]},"scopeSpans":[{"spans":[{"traceId":"000000000000000000000000deadbeef","spanId":"deadbeef00000001","name":"selftest","kind":1,"startTimeUnixNano":"1700000000000000000","endTimeUnixNano":"1700000000100000000"}]}]}]}'
+          # 提交之后要等: collector 的 batch processor 有超时，Jaeger 的索引也是异步的。
+          # 不等待就查 = 每次都"查不到"，然后人会去怀疑链路断了(实测踩到两次)。
+          for i in 1 2 3 4 5 6 7 8; do
+            sleep 5
+            r=$(curl -s -m 6 "http://$JAEGER:16686/api/services")
+            case "$r" in *selftest*) echo "Jaeger services(第${i}次, 等待后) -> $r"; break;; esac
+            [ "$i" = 8 ] && echo "Jaeger services(等 40s 仍空) -> $r"
+          done
+          printf 'Jaeger selftest 查询  -> '
+          curl -s -m 6 "http://$JAEGER:16686/api/traces/000000000000000000000000deadbeef" | head -c 220; echo
+      env:
+        - {name: SVC, value: otel-collector.observability.svc}
+        - {name: JAEGER, value: jaeger.observability.svc}

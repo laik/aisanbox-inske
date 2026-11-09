@@ -15,7 +15,7 @@ metadata:
   labels: {aisanbox.io/pack: agent-enforcement}
 spec:
   podSelector:
-    matchLabels: {projectcapsule.dev/tenant: acme}
+    matchLabels: {projectcapsule.dev/tenant: tenant-a}
   kprobes:
     # 例: 该租户的 python agent 不允许直连公共 DNS(强制走受控解析)
     - call: "security_socket_connect"

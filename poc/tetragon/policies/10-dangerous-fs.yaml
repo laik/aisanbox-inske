@@ -15,7 +15,7 @@ metadata:
   labels: {aisanbox.io/pack: agent-visibility}
 spec:
   podSelector:
-    matchLabels: {projectcapsule.dev/tenant: acme}
+    matchLabels: {projectcapsule.dev/tenant: tenant-a}
   kprobes:
     # 读配置/凭据目录: 凭据外泄与配置读取的可见性
     - call: "sys_openat"

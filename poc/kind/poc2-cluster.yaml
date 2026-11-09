@@ -1,0 +1,54 @@
+# POC2 §3.2 —— 单集群 3 节点；不装默认 CNI，Antrea 作为唯一 CNI。
+#
+# 本轮环境: root@192.168.5.190 (Ubuntu 24.04 / 内核 6.8.0-147 / 48C / 94GiB / BTF 有)。
+# 与上一轮(colima 4C/7GiB)的偏离已消除: POC2 §3.1 建议的 8C/16G 与 3 节点在这里都是
+# 真实满足的，因此平台组件可以用默认副本数(除 Gatekeeper 仍显式写 requests/limits，
+# 这本身是 §3.5 对平台组件的要求)。
+#
+# apiServerAddress/apiServerPort: 让**集群外**(这台 Mac、以及演示用的笔记本)能直接用
+# kubectl 连进 kind 的 apiserver —— 6443 发布在宿主所有网卡上。
+# 实测要点: kind 把 6443 作为 docker port 映射发布到 0.0.0.0，因此
+#   kubectl --context kind-agent-runtime-poc ...
+# 需要在 kubeconfig 里把 server 指到宿主 IP，而不是 127.0.0.1。见 01-cluster.sh 末尾
+# 生成的 remote-kubeconfig。
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: agent-runtime-poc
+
+networking:
+  disableDefaultCNI: true
+  podSubnet: 10.244.0.0/16
+  # 外部可访问(用户要求): apiserver 监听宿主所有网卡
+  apiServerAddress: "0.0.0.0"
+  apiServerPort: 6443
+
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      # Jaeger UI(NodePort 31686)发布到宿主 —— 演示时浏览器直接开
+      # http://<宿主IP>:31686。NodePort 本身不会自动发布到宿主，必须显式映射，
+      # 这是 kind 的 create-time 选项(后来加不了，只能重建集群)。
+      - {containerPort: 31686, hostPort: 31686, protocol: TCP}
+  - role: worker
+  - role: worker
+
+# ---------------------------------------------------------------------------
+# 外部可访问的**第二个**必要条件(实测, 上一轮漏了):
+# 只写 apiServerAddress 会让 apiserver 证书 SAN = [10.96.0.1, 172.22.0.2, 0.0.0.0] ——
+# 端口是发布出去了，但用宿主 IP 连会得到
+#   x509: certificate is valid for 10.96.0.1, 172.22.0.2, 0.0.0.0, not 192.168.5.190
+# 也就是说: 网络通了、TLS 没过。必须把宿主 IP 加进 certSANs。
+# 字段名是 **certSANs**(kubeadm 的 ClusterConfiguration.apiServer)。写成 extraSANs
+# 会被 kind **静默忽略** —— 集群照常创建，SAN 不变。见 kind/fix-apiserver-sans.sh。
+# ---------------------------------------------------------------------------
+kubeadmConfigPatches:
+  - |
+    type: kubeadm/clusterConfiguration
+    apiVersion: kubeadm.k8s.io/v1beta4
+    kind: ClusterConfiguration
+    apiServer:
+      certSANs:
+        - "192.168.5.190"
+        - "127.0.0.1"
+        - "localhost"
+        - "agent-runtime-poc-control-plane"

@@ -1,0 +1,13 @@
+# 反例: 同一个 accessModes: ReadWriteMany 声明，放在默认 local-path 上。
+# 结论(实测): PVC 会被**接受**(API 不校验底层能力)，但绑卷/挂载阶段才暴露问题。
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: probe-localpath-rwx
+  namespace: tenant-a-runtime
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: standard
+  resources:
+    requests:
+      storage: 1Gi

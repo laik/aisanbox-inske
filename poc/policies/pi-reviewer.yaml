@@ -1,0 +1,35 @@
+# POC2 §5.3: "Reviewer 的策略只允许读取 /data/workspace"。
+# 与 developer 版本**只差一行**: /data/workspace 从 read_write 移到 read_only。
+# 两条独立的强制层(都要测，见 phases/11-pi-scenario.sh 的 SEC-06):
+#   (1) 这里 —— OpenShell 的文件系统策略(在 agent 进程的系统调用层生效);
+#   (2) PVC mount 的 read_only: true —— Kubernetes 挂载层。
+# 只测 (2) 不够: POC2 §10.5 明确说"必须真实进入 Reviewer 容器执行，不能只看 PVC
+# YAML 中的 readOnly 字段"。
+#
+# 为什么必须显式写(实测): OpenShell 的默认文件系统基线只有
+#   read_only:  /bin /usr /lib /proc /dev/urandom /etc /var/log
+#   read_write: /tmp /dev/null
+# —— **不含 /data**。所以在沙箱里 `ls /data/workspace` 得到 `Permission denied`，
+# 而**同一个 PVC 挂进一个普通 Pod** 时 uid 10001 读写都正常(实测 UID_WRITE_OK)。
+# 也就是说: 不是存储/权限问题，是策略边界。这个坑在 /opt 上先出现过一次(pi 的
+# agent 目录)，换到 /data 又出现一次 —— 根因是"平台默认基线覆盖哪些路径"，
+# 不是某个挂载或某个镜像的 bug。
+#
+# 因此这里显式把挂载点加进 read_write。**不要**为了省事改成 read_write: [/] ——
+# 那等于把整个根可写，`/.openshell`、`/run` 这些 OpenShell 自己用的路径也一起放开了
+# (POC2 §5.3 特别提了不要覆盖它们)。
+version: 1
+filesystem_policy:
+  include_workdir: true
+  read_only:
+    - /bin
+    - /usr
+    - /lib
+    - /proc
+    - /dev/urandom
+    - /etc
+    - /var/log
+  read_write:
+    - /tmp
+    - /dev/null
+    - /data/workspace

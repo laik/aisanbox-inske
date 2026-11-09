@@ -1,0 +1,97 @@
+# POC-02 —— 两个租户。
+# 注意(实测): additionalMetadata 会打到该租户**所有** namespace 上，包括 gateway ns。
+# 所以 POC2 §4.1 里的 platform.example.com/runtime 不能靠 additionalMetadata 注入 ——
+# 它必须由平台只打在 runtime ns 上(见 04-capsule.sh 末尾)。这样 Gatekeeper 才能按
+# "namespace 的角色"划作用域。
+# 实测偏离(必须写下来): POC2 里的 Tenant 只写了 namespaceOptions.quota + forceTenantPrefix,
+# 这样 alice 会拿到 "You do not have any Tenant assigned" —— 因为 Capsule 0.15 的归属判定
+# 看的是 spec.owners。所以这里补 owners，并按 POC2 §3.5 的要求补上资源 requests/limits 的
+# 合同（LimitRange 默认值 + 配额），让"Runtime 工作负载必须有 requests/limits"可验证。
+apiVersion: capsule.clastix.io/v1beta2
+kind: Tenant
+metadata:
+  name: tenant-a
+  labels: {app.kubernetes.io/part-of: aisanbox-poc2}
+spec:
+  owners:
+    - {kind: Group, name: tenant-a-owners}
+  namespaceOptions:
+    quota: 5
+    additionalMetadata:
+      labels:
+        platform.example.com/tenant: tenant-a
+  forceTenantPrefix: true
+  # 配额要按**一个沙箱的真实开销**来算，不是按"agent 容器"。
+  # 实测(第二轮，第一次跑 3 沙箱场景时): 第 3 个沙箱起不来，CLI 只说
+  #   create sandbox failed: timed out waiting for gated workload Pod poc-shared--git-test
+  # 真正的原因在 **agent-sandbox 控制器**的日志里:
+  #   pods "poc-shared--git-test" is forbidden: exceeded quota: capsule-tenant-a-0,
+  #   requested: limits.memory=1Gi, used: limits.memory=2Gi, limited: limits.memory=2560Mi
+  # 两条结论要写进报告:
+  #  (1) Capsule 的配额**确实管住了** OpenShell 创建的沙箱(这正是 POC-02 要的证据)，
+  #      而且按 §3.4 的 `scope: Tenant` 是**跨该租户所有 namespace 聚合**的 ——
+  #      gateway pod + 每个沙箱的 agent pod 都算在内。
+  #  (2) 但报错路径很长: CLI 说 timeout，根因在另一个产品的日志里。生产上要把
+  #      quota 拒绝做成可观测的一等事件(§12.2 的 Kubernetes Events/Audit 那一行)。
+  # 一个沙箱的实测开销(agent 500m/1Gi + 它自己的 workspace PVC 1Gi；supervisor 不额外计):
+  #   ≈ 500m CPU / 1Gi limits / 1Gi storage。gateway pod 另占 300m/512Mi。
+  # 所以 3 个沙箱(dev + 2 reviewer)实际需要:
+  #   limits.cpu   ≥ 300m + 3*500m = 1800m
+  #   limits.memory≥ 512Mi + 3*1Gi = 3584Mi
+  resourceQuotas:
+    items:
+      - hard:
+          requests.cpu: "2"
+          requests.memory: 3Gi
+          limits.cpu: "4"
+          limits.memory: 6Gi
+          persistentvolumeclaims: "10"
+          count/pods: "40"
+          count/services: "10"
+          requests.storage: 20Gi
+  limitRanges:
+    items:
+      - limits:
+          - type: Container
+            default: {cpu: 300m, memory: 512Mi}
+            defaultRequest: {cpu: 100m, memory: 128Mi}
+            max: {cpu: "1", memory: 1Gi}
+            min: {cpu: 10m, memory: 16Mi}
+---
+apiVersion: capsule.clastix.io/v1beta2
+kind: Tenant
+metadata:
+  name: tenant-b
+  labels: {app.kubernetes.io/part-of: aisanbox-poc2}
+spec:
+  owners:
+    - {kind: Group, name: tenant-b-owners}
+  namespaceOptions:
+    quota: 5
+    additionalMetadata:
+      labels:
+        platform.example.com/tenant: tenant-b
+  forceTenantPrefix: true
+  resourceQuotas:
+    items:
+      - hard:
+          requests.cpu: "1"
+          requests.memory: 1Gi
+          limits.cpu: "1"
+          limits.memory: 1Gi
+          persistentvolumeclaims: "3"
+          count/pods: "10"
+  # 实测发现(重要, 值得进报告): 一旦 ResourceQuota 里出现 limits.cpu / limits.memory，
+  # **每个** Pod 都必须能被算出这些值。OpenShell Gateway chart 的 certgen hook Job 不写
+  # resources，于是被配额挡住:
+  #   failed quota: capsule-tenant-b-0: must specify limits.cpu for: certgen
+  # 把它补全的正是 LimitRange 的 default —— 所以"有 quota 就必须同时有 LimitRange default"，
+  # 否则平台自己的安装在租户 namespace 里跑不起来。tenant-a 一开始能过就是因为它有 LimitRange。
+  limitRanges:
+    items:
+      - limits:
+          - type: Container
+            default: {cpu: 200m, memory: 256Mi}
+            defaultRequest: {cpu: 50m, memory: 64Mi}
+            max: {cpu: "1", memory: 1Gi}
+            min: {cpu: 10m, memory: 16Mi}

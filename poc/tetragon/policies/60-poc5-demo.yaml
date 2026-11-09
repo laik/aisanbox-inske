@@ -1,0 +1,54 @@
+# ---------------------------------------------------------------------------
+# 7) Phase 5(12-tetragon.sh)专用演示策略 —— 只作用于 poc-tetra-obs 里的探针 Pod。
+# 与 tenant pack(00/10/20/30,按 Capsule 租户标签选 Pod)分开: 那些是"平台按租户
+# 观测"的形态; 这一份是"验证 Tetragon 自身能力"的形态(POC-07 各项)。
+#
+# 实测坑: matchParentBinaries **必须**配 --parents-map-enabled(经 chart 的
+#   extraArgs 传,chart 没有专用开关)。不开时这条策略加载失败:
+#     "matchParentBinaries selector can be used only with parents map enabled"
+#   关于父的 binary 记成什么: 本轮(1.8.0 / 6.8.0-147)实测 PROCESS_EXIT/PROCESS_KPROBE
+#   事件里父的 binary 记的是**调用路径** /bin/sh;上一轮记录到解析后的 /bin/busybox。
+#   版本/内核相关,两个前缀都写进 values 才稳。
+# ---------------------------------------------------------------------------
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: poc5-child-of-shell
+  labels: {aisanbox.io/pack: poc5-verify}
+spec:
+  podSelector:
+    # 实测坑: podSelector 匹配的是 **Pod 的 labels**。命名空间对象上自动带的
+    # kubernetes.io/metadata.name 标签**不会**出现在 Pod 上 —— 用它选会
+    # "加载成功、0 事件"。要按命名空间圈定,就给 Pod 显式打标签(探针有 aisanbox.io/poc)。
+    matchLabels: {aisanbox.io/poc: phase5}
+  kprobes:
+    - call: "sys_execve"
+      syscall: true
+      message: "poc5:child-of-shell"
+      args: [{index: 0, type: string}]
+      selectors:
+        - matchParentBinaries:
+            - operator: Prefix
+              values: ["/bin/busybox", "/bin/sh"]
+      tags: ["poc07", "parent"]
+---
+# 网络五元组观测(POC-07c)。与 00-egress-who.yaml 同构(tcp_connect + type: sock),
+# 按探针 Pod 标签选。上一轮的策略包 selector 是旧集群的租户标签,拿到本集群
+# "加载成功、0 事件",现象读起来像"Tetragon 没工作",实际是 selector 不命中 ——
+# 两份各演示一种真实形态。
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: poc5-egress-who
+  labels: {aisanbox.io/pack: poc5-verify}
+spec:
+  podSelector:
+    matchLabels: {aisanbox.io/poc: phase5}
+  kprobes:
+    - call: "tcp_connect"
+      syscall: false
+      message: "poc5:egress-who"
+      args: [{index: 0, type: sock}]
+      tags: ["poc07", "network"]
+# 说明: Process Exit **不需要任何策略**。PROCESS_EXIT 是内置事件,开了 process events
+# (chart 默认)就带 process_exit{status/errno/signal}。写在这里免得有人去猜挂哪个 hook。

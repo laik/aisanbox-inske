@@ -2,7 +2,9 @@
 # 每一项都对应一条已实测的策略能力 —— 默认安装**没有**这些，
 # 于是若干"更深层"的策略会在加载时报错或被静默忽略。
 #
-# 实测对应关系(2026-11-06，全部在 kind / 内核 6.12.72 上验证):
+# 实测对应关系(2026-11-06 在 kind / 内核 6.12.72 上验证; 2026-11-08 在
+# 内核 6.8.0-147-generic 的 kind 宿主上复测,新增 disable-kprobe-multi 与
+# bpf-LSM 两条,见下):
 #
 #   parents-map-enabled
 #     打开前: 任何用了 matchParentBinaries 的策略**加载失败**:
@@ -18,16 +20,37 @@
 #     祖先进程链。要按"谁启动了谁"归因(例如 python 起了 sh)就需要它。
 #     注意值必须是逗号分隔的字符串，helm --set 里要转义成 base\,kprobe\,lsm。
 #
-#   enable-process-environment-variables —— **这条是失败记录，保留以免再踩**
-#     开之后(也配了 filter-environment-variables=TRACEPARENT)，
-#     1.8.0 的 PROCESS_EXEC 事件里 **没有 process_env 字段**:
-#       grep -c process_env /var/log/tetragon/tetragon.log  ->  0
-#     日志里的 config map 确实显示 enable-process-environment-variables:true，
-#     所以不是没生效于启动参数，而是这个版本不导出该字段。
-#     => 想用 trace id 把内核记录和应用 trace 关联起来，当前可用的办法是
-#        **把 id 放进 argv**(arguments 字段一定会导出)，实测 kernel 记录里
-#        原样出现: arguments: "tid=6cb99dc62fa84f419727198f93787076"。
-#        见 poc/usage/03-demo-views.py。
+#   enable-process-environment-variables —— 2026-11-08 更正上一轮的结论
+#     上一轮在 1.8.0 的 PROCESS_EXEC 里 grep "process_env" 得到 0,于是记成
+#     "该版本不导出该字段"。**grep 的键名不对**:实际导出的键叫
+#     `environment_variables`(process 对象下),实测一条 exec 事件里带 43 个
+#     完整变量。所以字段是有的,只是:
+#       1) 体积大(每次 exec 复制整份环境),生产要配 filter-environment-variables
+#          (chart values 没有这个开关,要走 extraArgs);
+#       2) 用它做 trace 关联前想清楚:容器 env 在 Pod 生命周期里不变,关联粒度
+#          只到 Pod。**把 id 放进 argv**(arguments 一定导出)仍然是更好的做法。
+#
+#   disable-kprobe-multi —— 2026-11-08 新增(kind 宿主 6.8.0-147)
+#     1.8.0 默认用 kprobe_multi 批量挂 kprobe，两个实测后果:
+#       a) 同一策略里**同一 symbol 出现两次**(00 里两条 tcp_connect、30 里两条
+#          sys_execve —— 上一轮在 6.12.72 上完全正常)加载失败:
+#          "can't have multiple instances of same symbol 'tcp_connect' with
+#           kprobe_multi, use --disable-kprobe-multi option"
+#       b) 带 action: Override 的**强制**策略根本不允许用 kprobe_multi:
+#          "override validation failed: can't override 'security_socket_connect'
+#           function with kprobe_multi, use --disable-kprobe-multi option"
+#     => 加 `--disable-kprobe-multi`(回退到逐个挂 kprobe),以上全部照常加载。
+#     性能上 kprobe_multi 更快,生产集群若要开它,需要把"同 symbol 多探针"的
+#     策略拆成多条、且强制类策略必须单独加载 —— 平台策略打包时要按这个约束设计。
+#
+#   lsmhooks 在 6.8.0-147 上**整体不可用** —— 环境差异,不是策略写错:
+#     所有 lsmhooks 策略加载失败:
+#       "does you kernel support the bpf LSM? You can enable LSM BPF by modifying
+#        the GRUB configuration /etc/default/grub with GRUB_CMDLINE_LINUX=\"lsm=bpf\""
+#     实测: 宿主 /sys/kernel/security/lsm = lockdown,capability,landlock,yama,apparmor
+#     (Ubuntu 6.8 内核 CONFIG_LSM 不含 bpf;上一轮的 6.12.72 含)。
+#     lsm 列表**只能开机通过 grub lsm=bpf 改**,所以本 kind 集群里 supply-chain
+#     观察(20)与 exec 强制(50)要等宿主重启后才能启用。kprobe 类观测不受影响。
 tetragon:
   enableProcessCred: true
   enableProcessNs: true
@@ -35,5 +58,6 @@ tetragon:
     enabled: base,kprobe,lsm
   extraArgs:
     parents-map-enabled: ""
+    disable-kprobe-multi: ""
     # 保留但**不要依赖**它输出内容，见上面注释
     enable-process-environment-variables: ""

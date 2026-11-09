@@ -1,0 +1,26 @@
+# POC2 §3.1 建议 8C/16G。本机是 4C/7GiB 的 colima VM —— 实测:
+# Gatekeeper chart 默认 replicas=3、每副本 requests/limits=512Mi，加 audit 就是 2 GiB，
+# 占整台 VM 的 25%，把 kube-apiserver 压到丢 leader election
+# (Capsule 控制器随之 CrashLoopBackOff: "leader election lost")。
+#
+# 正确的 key 是 controllerManager.resources / audit.resources —— 顶层写 resources:
+# **不会报错也不会生效**(实测两轮才看出来)。这类"写错 key 静默无效"的地方要在
+# 每次改完用 kubectl -o jsonpath 复核，别信 helm 的退出码。
+# 副本数按环境:
+#   - 第一轮 colima 4C/7GiB: 只能 2(3 副本 × 512Mi 会把 apiserver 压到丢 leader election)。
+#   - 本轮 192.168.5.190 48C/94GiB: 用 chart 默认的 3 —— 记录这一点是为了说明
+#     上一轮的 2 **纯粹是容量妥协**，不是设计选择。POC2 §3.1 的 8C/16G 在这里是真的满足。
+#     下面的 requests/limits 保留: §3.5 对平台组件自身要有 requests/limits 的要求不变。
+replicas: 3
+controllerManager:
+  resources:
+    requests: {cpu: 50m, memory: 128Mi}
+    limits: {cpu: 500m, memory: 320Mi}
+audit:
+  resources:
+    requests: {cpu: 25m, memory: 96Mi}
+    limits: {cpu: 200m, memory: 256Mi}
+# 审计周期从 60s 放宽到 20min: POC 不需要高频全量审计，这是纯 CPU/内存开销。
+# 注意: 放宽审计周期会让"违规计数"变陈旧 —— 本 POC 用**实时 admission 日志**判断
+# 拦截效果(见 05-gatekeeper.sh)，不依赖 audit 结果，所以可以放心调。
+auditInterval: 1200

@@ -1,0 +1,50 @@
+# POC2 §5.2 —— 共享项目 PVC。带 OpenShell 的授权标签(resource admission)。
+# 关键点: 标签值里的 workspace 名是 **OpenShell workspace 名**(poc-shared)，
+# 不是 Kubernetes namespace 名。POC2 特别强调了这一点，实测确认如此。
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: shared-workspace
+  namespace: tenant-a-runtime
+  labels:
+    openshell.ai/sandbox-attachable: "true"
+    # POC2 §4.4 用的是 openshell.ai/sandbox-attachable-workspace；
+    # 本 POC 的 gateway 配置里 required_labels 用的是 example.com/workspace(见
+    # openshell2/gateway-values.yaml 的注释)。两个都打上，好让两种配置都能通过。
+    openshell.ai/sandbox-attachable-workspace: "poc-shared"
+    example.com/workspace: "poc-shared"
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: rwx-shared
+  resources:
+    requests:
+      storage: 5Gi
+---
+# 反例: 不带授权标签的同一个 StorageClass 上的 PVC —— 应当被 resource admission 拒(SEC-14)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: unapproved-workspace
+  namespace: tenant-a-runtime
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: rwx-shared
+  resources:
+    requests:
+      storage: 1Gi
+---
+# 反例 2: 标签在，但 workspace 值不匹配(跨 workspace 借用)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: other-workspace
+  namespace: tenant-a-runtime
+  labels:
+    openshell.ai/sandbox-attachable: "true"
+    example.com/workspace: "some-other-workspace"
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: rwx-shared
+  resources:
+    requests:
+      storage: 1Gi

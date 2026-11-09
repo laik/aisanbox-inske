@@ -1,0 +1,29 @@
+# ---------------------------------------------------------------------------
+# 8) 网络运行时强制演示(POC2 §7.2 的延伸: "看见"之外的"当场拒绝")。
+# 与 40-enforce-network.yaml 同构(security_socket_connect + Override argError:-1),
+# 但按探针 Pod 标签选 —— 40 按租户标签选,作用到 tenant-a 会**改变正在运行的 agent
+# 的行为**;演示阶段不能动正在跑的场景,所以用探针复现同一机制。
+# 实测差异(上一轮结论,本轮在 6.8.0-147 内核复验):
+#   NetworkPolicy 拦:  连接一直重试到超时(对 nc 是 ~30s -w 超时) —— agent 容易挂住;
+#   本策略拦:          connect() 立即返回 EPERM(~0s),调用方进程存活,错误可见。
+# 分层定位不变: 真正的"允许/拒绝"仍归 NetworkPolicy/OpenShell;这条演示的是
+# Tetragon 作为**补充控制点**(按 binary+目的地)与它的可观测性一致性。
+# ---------------------------------------------------------------------------
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: poc5-enforce-net
+  labels: {aisanbox.io/pack: poc5-verify}
+spec:
+  podSelector:
+    matchLabels: {aisanbox.io/poc: phase5}
+  kprobes:
+    - call: "security_socket_connect"
+      syscall: false
+      message: "poc5:egress-denied"
+      args: [{index: 0, type: socket}, {index: 1, type: sockaddr}]
+      selectors:
+        - matchArgs:
+            - {index: 1, operator: SAddr, values: ["1.1.1.1"]}
+          matchActions: [{action: Override, argError: -1}]
+      tags: ["poc07", "enforce"]

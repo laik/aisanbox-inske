@@ -15,7 +15,7 @@ metadata:
   labels: {aisanbox.io/pack: agent-visibility}
 spec:
   podSelector:
-    matchLabels: {projectcapsule.dev/tenant: acme}
+    matchLabels: {projectcapsule.dev/tenant: tenant-a}
   kprobes:
     # 离开集群的连接
     - call: "tcp_connect"
@@ -50,7 +50,7 @@ metadata:
   labels: {aisanbox.io/pack: agent-visibility}
 spec:
   podSelector:
-    matchLabels: {projectcapsule.dev/tenant: acme}
+    matchLabels: {projectcapsule.dev/tenant: tenant-a}
   kprobes:
     - call: "security_socket_listen"
       syscall: false

@@ -15,7 +15,7 @@ metadata:
   labels: {aisanbox.io/pack: agent-visibility}
 spec:
   podSelector:
-    matchLabels: {projectcapsule.dev/tenant: acme}
+    matchLabels: {projectcapsule.dev/tenant: tenant-a}
   lsmhooks:
     - hook: "bprm_check_security"
       message: "agent:package-manager"
@@ -43,7 +43,7 @@ metadata:
   labels: {aisanbox.io/pack: agent-visibility}
 spec:
   podSelector:
-    matchLabels: {projectcapsule.dev/tenant: acme}
+    matchLabels: {projectcapsule.dev/tenant: tenant-a}
   kprobes:
     # 实测: sh -c 之类的进程启动即产生 setuid 事件(14 次)，
     # 说明它噪声较高; 生产建议配 matchCapabilities 或只在审计通道开启。

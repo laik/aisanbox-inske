@@ -1,0 +1,56 @@
+# POC2 §4.2 / §4.4 / §8 —— 每个租户一份，只改 ns 与名字。
+# 用 helm --set 覆盖 server.name / server.sandboxNamespace / namespace。
+workspaceResources:
+  # POC2 §4.3: Gateway chart 和 workspace chart 分开装。
+  # workspace chart 负责**租户 runtime ns** 里的 SA / Role / RoleBinding / NetworkPolicy。
+  enabled: false
+
+server:
+  logLevel: info
+  # POC2 §2.3: 一个 gateway 只服务一个租户，所有 sandbox 落在该租户专属 runtime ns。
+  # 所以用 shared，不需要 operator 模式(round 1 用的就是 operator，两种都记下来了)。
+  workspaceModePlaceholder: see-drivers
+  drivers:
+    kubernetes:
+      workspaceMode: shared
+      # POC2 §4.4: 外部 PVC 必须经过授权标签检查，不要为了省事关掉 admission。
+      allowDriverConfig: true
+      resourceAdmission:
+        enabled: true
+        # POC2 §4.4 写的是 openshell.ai/sandbox-attachable-workspace: "${workspace}"。
+        # 实测(v0.1.7 源码 crates/openshell-core/src/resource_admission.rs):
+        #   - ${workspace} 占位符**是**支持的(整值替换) —— POC2 这点是对的;
+        #   - 但 openshell.ai/sandbox-attachable* 不在保留键里，保留键是
+        #     openshell.ai/managed-by | gateway-id | sandbox-workspace，所以可以用;
+        #   - 这里额外把 workspace 标签换成 example.com/workspace，是为了让
+        #     "平台自己定义授权标签"这件事可见(生产上平台通常想用自己的命名空间)。
+        #     两个键的实测结果都在 08-gateway.sh 里验证。
+        requiredLabels:
+          openshell.ai/sandbox-attachable: "true"
+          example.com/workspace: "${workspace}"
+
+  # POC2 §8.1: Gateway Trace
+  otlp:
+    endpoint: http://otel-collector.observability.svc:4317
+    serviceName: ""   # 由 --set server.name 决定，见脚本
+
+  # POC2 §8.3: OCSF 安全事件。chart 暴露的是 JSONL 落盘(server.ocsfLog)，
+  # POC2 写的 [openshell.gateway.otlp.ocsf] 通过 gatewayConfig 直接写 TOML。
+  # 两种都在 08-gateway.sh 里试过，结果按实测记录。
+  ocsfLog:
+    enabled: true
+    path: /var/openshell/gateway-ocsf.jsonl
+
+  # 内存只有 7GiB 的机器上，两个 gateway 各给一份明确的 requests/limits
+  # (这也满足 POC2 §3.5 对平台组件自身要有 requests/limits 的要求)。
+  telemetryEnabled: false
+
+resources:
+  requests: {cpu: 100m, memory: 256Mi}
+  limits: {cpu: 500m, memory: 512Mi}
+
+# POC2 §8.2: Agent Trace Relay 默认关闭。开启后 Pi 的 OTLP 经 supervisor 转发，
+# 带 openshell.sandbox.id，且 agent 不需要直接连 Collector。
+gatewayConfig:
+  "openshell.gateway.otlp.agent":
+    enabled: true

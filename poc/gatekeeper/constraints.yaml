@@ -1,0 +1,238 @@
+# POC2 §3.5 —— 租户工作负载的准入约束。
+# 一个 ConstraintTemplate + 两个约束实例：把「不允许什么」和「对谁生效」分开写，
+# 这样作用域是显式的、可 diff 的。
+#
+# 实测要点(都踩过，写下来):
+#  1. ConstraintTemplate 会动态生成同名 CRD。紧跟着 apply 约束实例会报
+#     "no matches for kind K8sPocRuntime" —— 必须等 CRD Established(见 05-gatekeeper.sh)。
+#  2. Gatekeeper 是 **validating** webhook，跑在 Capsule 的 LimitRange(mutating)**之后**。
+#     所以「必须显式写 requests/limits」这条在带 LimitRange default 的 ns 里永远不会触发:
+#     资源早在 admission 链前半段就被补上了。这不是规则写错，是顺序决定的。
+#  3. Gatekeeper 的 match 里**没有** users/groups(实测只有 kinds/namespaces/
+#     excludedNamespaces/labelSelector/namespaceSelector/scope/source)。要按身份精确生效，
+#     只能在 Rego 里读 input.review.userInfo —— 见 skip_identity。
+#  4. **改 ConstraintTemplate 的参数 schema 不会更新已生成的 CRD**。加了 allowedIdentities
+#     之后 apply 约束会得到 strict decoding error: unknown field "spec.parameters.*"。
+#     必须先删 ConstraintTemplate(连带删掉它生成的 CRD 与约束实例)再重建:
+#        kubectl delete constrainttemplate k8spocmanagedresources
+#        kubectl apply -f poc/gatekeeper/constraints.yaml
+#     升级平台时这条会造成约束短暂失效，属于要写进变更流程的风险。
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8spocruntime
+spec:
+  crd:
+    spec:
+      names: {kind: K8sPocRuntime}
+      validation:
+        openAPIV3Schema:
+          type: object
+          properties:
+            allowHostPaths: {type: array, items: {type: string}}
+            forbiddenServiceAccounts: {type: array, items: {type: string}}
+            allowedIdentities: {type: array, items: {type: string}}
+            allowedGroups: {type: array, items: {type: string}}
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8spocruntime
+
+        # 平台身份的**真实锚点是 namespace 限定的 ServiceAccount 名**，不是组。
+        # 实测原因: Kubernetes 给 SA 的组只有 system:serviceaccounts /
+        # system:serviceaccounts:<ns> / system:authenticated，**不能自定义**；
+        # 自定义组只有在 impersonation / OIDC 场景才会出现。
+        # 早期版本用 --as-group=platform.poc 测通过，那是**测试自己造的组**，
+        # 真实 gateway SA 永远带不上 —— 于是 gateway 自己创建 Sandbox 会被自己的
+        # 约束拒掉(见 08/11 阶段的实测报错)。所以这里按 username 精确白名单。
+        skip_identity {
+          u := input.review.userInfo.username
+          allow := input.parameters.allowedIdentities[_]
+          u == allow
+        }
+        skip_identity {
+          g := input.review.userInfo.groups[_]
+          allow := input.parameters.allowedGroups[_]
+          g == allow
+        }
+
+        violation[{"msg": sprintf("租户工作负载不允许 privileged: container %v", [c.name])}] {
+          c := input_containers[_]
+          c.securityContext.privileged == true
+          not skip_identity
+        }
+        violation[{"msg": "租户工作负载不允许 hostNetwork"}] {
+          input.review.object.spec.hostNetwork == true
+          not skip_identity
+        }
+        violation[{"msg": "租户工作负载不允许 hostPID"}] {
+          input.review.object.spec.hostPID == true
+          not skip_identity
+        }
+        violation[{"msg": sprintf("不允许的 hostPath 挂载: %v (只允许 allowHostPaths 中的前缀)", [v.hostPath.path])}] {
+          v := input.review.object.spec.volumes[_]
+          v.hostPath
+          not allowed_hostpath(v.hostPath.path)
+          not skip_identity
+        }
+        allowed_hostpath(p) {
+          allowed := input.parameters.allowHostPaths[_]
+          startswith(p, allowed)
+        }
+        violation[{"msg": sprintf("租户不能使用平台专用 ServiceAccount: %v", [sa])}] {
+          sa := input.review.object.spec.serviceAccountName
+          forbidden := input.parameters.forbiddenServiceAccounts[_]
+          sa == forbidden
+          not skip_identity
+        }
+        # 要求显式声明 —— 注意上面「实测要点 2」，这条在有 LimitRange default 的 ns 中不触发
+        violation[{"msg": sprintf("container %v 必须显式声明 resources.requests", [c.name])}] {
+          c := input_containers[_]
+          not c.resources.requests.cpu
+          not skip_identity
+        }
+        violation[{"msg": sprintf("container %v 必须显式声明 resources.limits", [c.name])}] {
+          c := input_containers[_]
+          not c.resources.limits.cpu
+          not skip_identity
+        }
+        input_containers[c] {
+          c := input.review.object.spec.containers[_]
+        }
+        input_containers[c] {
+          c := input.review.object.spec.initContainers[_]
+        }
+---
+# 作用域: 带 platform.example.com/tenant 标签的 namespace(tenant-a 这一个实例)。
+# 租户 ns 生效；平台组件由 Rego 里的 skip_identity 按身份放行。
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sPocRuntime
+metadata:
+  name: poc-tenant-pod-boundary
+spec:
+  enforcementAction: deny
+  match:
+    kinds: [{apiGroups: [""], kinds: ["Pod"]}]
+    # 作用域: **租户 runtime namespace**，不是租户的所有 namespace。
+    # 实测原因: 平台组件(Gateway chart 的 certgen hook Job)在 gateway ns 里，且它的 Pod
+    # **不声明 resources** —— 把"必须显式 requests/limits"应用到 gateway ns 会把自己的
+    # 安装卡死(Error: job os-b-openshell-certgen failed: DeadlineExceeded)。
+    # POC2 §4.1 本来就给了区分用的标签 platform.example.com/runtime，这里用它来划边界:
+    # 按**角色**划，而不是对整个 runtime ns 一刀切豁免。
+    namespaceSelector:
+      matchLabels: {platform.example.com/tenant: tenant-a, platform.example.com/runtime: "true"}
+  parameters:
+    allowHostPaths: ["/etc/ssl/certs"]
+    forbiddenServiceAccounts: ["openshell", "capsule-controller-manager"]
+    # 需要列出的身份不只是 gateway: **Sandbox 的 Pod 是 agent-sandbox 控制器创建的**，
+    # 它的 namespace 是 agent-sandbox-system，但 Pod 落在租户 runtime ns —— 所以它也会
+    # 命中这条按 namespace 选的规则。实测必须把它也列进 allowedIdentities。
+    allowedIdentities:
+      - "system:serviceaccount:tenant-a-gateway:os-a-openshell"
+      - "system:serviceaccount:agent-sandbox-system:agent-sandbox-controller"
+    allowedGroups: ["kubeadm:cluster-admins", "system:masters"]
+---
+# 第二个实例覆盖 tenant-b。故意写成两条而不是一条通配 —— 这样「新增租户要记得加约束」
+# 这件事在 git diff 里看得见。(生产更合适的做法是按标签匹配 + 由租户开通流程自动下发。)
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sPocRuntime
+metadata:
+  name: poc-tenant-pod-boundary-b
+spec:
+  enforcementAction: deny
+  match:
+    kinds: [{apiGroups: [""], kinds: ["Pod"]}]
+    namespaceSelector:
+      matchLabels: {platform.example.com/tenant: tenant-b, platform.example.com/runtime: "true"}
+  parameters:
+    allowHostPaths: ["/etc/ssl/certs"]
+    forbiddenServiceAccounts: ["openshell", "capsule-controller-manager"]
+    allowedIdentities:
+      - "system:serviceaccount:tenant-a-gateway:os-a-openshell"
+      - "system:serviceaccount:agent-sandbox-system:agent-sandbox-controller"
+    allowedGroups: ["kubeadm:cluster-admins", "system:masters"]
+---
+# SEC-10: 租户不能直接创建/修改平台托管的 CR(agent-sandbox / OpenShell)。
+# 单独一个模板，因为要匹配的是 CRD 组而不是 Pod 字段。
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8spocmanagedresources
+spec:
+  crd:
+    spec:
+      names: {kind: K8sPocManagedResources}
+      validation:
+        openAPIV3Schema:
+          type: object
+          properties:
+            allowedIdentities: {type: array, items: {type: string}}
+            allowedGroups: {type: array, items: {type: string}}
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8spocmanagedresources
+        # 锚点是 namespace 限定的 SA 全名(见 k8spocruntime 里同名的说明)。
+        # 实测: gateway 创建 Sandbox 时 Gatekeeper 看到的正是
+        #   user=system:serviceaccount:tenant-a-gateway:os-a-openshell
+        #   groups=[system:serviceaccounts, system:serviceaccounts:tenant-a-gateway, system:authenticated]
+        # —— 没有任何自定义组，所以只按组写规则会把自己的 gateway 拦在门外。
+        skip_identity {
+          u := input.review.userInfo.username
+          allow := input.parameters.allowedIdentities[_]
+          u == allow
+        }
+        skip_identity {
+          g := input.review.userInfo.groups[_]
+          allow := input.parameters.allowedGroups[_]
+          g == allow
+        }
+        violation[{"msg": sprintf("%v 由平台(Gateway/Controller)管理，租户不能直接创建或修改", [input.review.kind.kind])}] {
+          true
+          not skip_identity
+        }
+---
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sPocManagedResources
+metadata:
+  name: poc-managed-cr-only-platform
+spec:
+  enforcementAction: deny
+  parameters:
+    # 作用域按 namespaceSelector(租户 ns)，但豁免**按身份**。这一实例只列 tenant-a 的
+    # gateway SA —— 于是 tenant-b 的 gateway 在这里既不在 allowedIdentities，
+    # 它的 ns 也不匹配 tenant-a，两条路都不通。给 tenant-b 单独一份实例见下面。
+    allowedIdentities:
+      - "system:serviceaccount:tenant-a-gateway:os-a-openshell"
+    allowedGroups: ["kubeadm:cluster-admins", "system:masters"]
+  match:
+    kinds:
+      - apiGroups: ["agents.x-k8s.io", "extensions.agents.x-k8s.io"]
+        kinds: ["Sandbox", "SandboxTemplate", "SandboxClaim", "SandboxPool"]
+      - apiGroups: ["openshell.ai"]
+        kinds: ["*"]
+    # 只有带租户标签的 ns 里的这些对象受限；平台自己的 ns(gateway 等)不受这条影响。
+    namespaceSelector:
+      matchExpressions:
+        - {key: platform.example.com/tenant, operator: In, values: ["tenant-a"]}
+---
+# 同一个模板、tenant-b 的实例。生产里这两份应由租户开通流程自动下发。
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sPocManagedResources
+metadata:
+  name: poc-managed-cr-only-platform-b
+spec:
+  enforcementAction: deny
+  parameters:
+    allowedIdentities:
+      - "system:serviceaccount:tenant-b-gateway:os-b-openshell"
+    allowedGroups: ["kubeadm:cluster-admins", "system:masters"]
+  match:
+    kinds:
+      - apiGroups: ["agents.x-k8s.io", "extensions.agents.x-k8s.io"]
+        kinds: ["Sandbox", "SandboxTemplate", "SandboxClaim", "SandboxPool"]
+      - apiGroups: ["openshell.ai"]
+        kinds: ["*"]
+    namespaceSelector:
+      matchExpressions:
+        - {key: platform.example.com/tenant, operator: In, values: ["tenant-b"]}

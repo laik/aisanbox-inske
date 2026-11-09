@@ -12,7 +12,7 @@ metadata:
   labels: {aisanbox.io/pack: agent-visibility}
 spec:
   podSelector:
-    matchLabels: {projectcapsule.dev/tenant: acme}
+    matchLabels: {projectcapsule.dev/tenant: tenant-a}
   kprobes:
     # 全量执行审计(取证用)。量大时用 exportRateLimit 控制。
     - call: "sys_execve"

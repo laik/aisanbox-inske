@@ -1,0 +1,32 @@
+# POC2 §10.3: Developer 要 `git clone https://github.com/joho/godotenv.git`。
+# 这条**不是** provider(不给凭据)，而是网络边界: 哪个进程能到 github.com:443。
+# 单独一个 profile 是为了让"能出网"这件事是**显式声明**的，而不是"默认允许"。
+# 注意 binaries 里必须包含 git 的实际路径 —— pi 调 bash 跑 git，进程是 /usr/bin/git。
+# 实测另一个坑: access 的合法值是 **read-only / read-write / full**。
+# 写成 read 会 lint 失败:
+#   unknown access value 'unknown(-1)' (expected read-only, read-write, or full)
+# —— 官方 examples 里用的是 read-write，所以容易顺手写 read。
+id: poc-git
+display_name: PoC git (github.com)
+description: GitHub fetch for the code-review scenario (no credential; git over HTTPS)
+category: other
+credentials: []
+endpoints:
+  - host: github.com
+    port: 443
+    protocol: rest
+    access: read-only
+    enforcement: enforce
+  - host: codeload.github.com
+    port: 443
+    protocol: rest
+    access: read-only
+    enforcement: enforce
+  - host: github.githubassets.com
+    port: 443
+    protocol: rest
+    access: read-only
+    enforcement: enforce
+binaries:
+  - /usr/bin/git
+  - /usr/bin/curl
