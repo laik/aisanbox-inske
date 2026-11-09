@@ -1,7 +1,12 @@
-# 多租户 AI Sandbox POC — 实测结论
+# 多租户 AI Sandbox POC — 第一轮实测结论 / Round 1 Findings
 
-> 证据附录：第一轮逐项验证、报错原文与踩坑记录。
-> 结论摘要见 [index.html](index.html)（看图版）/ [SUMMARY.md](SUMMARY.md)（文字版）。
+> 证据附录：第一轮（operator 模式）逐项验证、报错原文与踩坑记录。
+> 当前有效的第二轮（POC2 shared 模式）结论见 [POC2-CONCLUSIONS.md](POC2-CONCLUSIONS.md)；
+> 仓库总览见 [README.md](../../README.md)。
+>
+> Evidence appendix for round 1 (operator mode): item-by-item validation, verbatim errors and pitfalls.
+> The current round-2 (POC2 shared mode) conclusions are in [POC2-CONCLUSIONS.md](POC2-CONCLUSIONS.md);
+> the repository overview is in [README.md](../../README.md).
 
 日期: 2026-11-03 ｜ 环境: macOS + Docker Desktop 29.2.1(VM kernel 6.12.72-linuxkit, 8C/8G) ｜ kind v0.33.0 × 2, K8s v1.37.0
 
