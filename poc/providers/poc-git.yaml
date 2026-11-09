@@ -6,6 +6,17 @@
 # 写成 read 会 lint 失败:
 #   unknown access value 'unknown(-1)' (expected read-only, read-write, or full)
 # —— 官方 examples 里用的是 read-write，所以容易顺手写 read。
+#
+# ⚠ 第二轮实测(2026-11-09, POC-09/§10.3)说明这**不只是笔误问题**: `access: read-only`
+#   的过滤发生在 **L7 的请求方法**上，于是 `git clone` 一定失败:
+#     OCSF HTTP:POST [MED] DENIED POST https://github.com/joho/godotenv.git/git-upload-pack
+#       [policy:_provider_poc_git engine:l7] [reason:L7_REQUEST deny POST github.com:443/…]
+#   而同一个 profile 下 `GET https://github.com/` 与 refs 广告(`GET …/info/refs`)是 ALLOWED。
+#   Git 的 smart-HTTP 即使 protocol.version=1 也要用 POST 做 fetch 协商，
+#   所以 **read-only 在 HTTP 方法层是"只读"，不是"语义上只读"**。
+#   因此 git-over-HTTPS 的 clone 需要 read-write(或 full)；想保持 read-only 就改用
+#   codeload 的 tarball(纯 GET)。这条要写进报告: provider profile 的 access 粒度是
+#   HTTP 方法，不是业务动作。
 id: poc-git
 display_name: PoC git (github.com)
 description: GitHub fetch for the code-review scenario (no credential; git over HTTPS)
@@ -15,17 +26,18 @@ endpoints:
   - host: github.com
     port: 443
     protocol: rest
-    access: read-only
+    # 见上面的实测说明: read-only 会拦掉 git 协商用的 POST，clone 因此必然失败。
+    access: read-write
     enforcement: enforce
   - host: codeload.github.com
     port: 443
     protocol: rest
-    access: read-only
+    access: read-write
     enforcement: enforce
   - host: github.githubassets.com
     port: 443
     protocol: rest
-    access: read-only
+    access: read-write
     enforcement: enforce
 binaries:
   - /usr/bin/git

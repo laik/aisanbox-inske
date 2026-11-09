@@ -34,9 +34,15 @@ server:
     endpoint: http://otel-collector.observability.svc:4317
     serviceName: ""   # 由 --set server.name 决定，见脚本
 
-  # POC2 §8.3: OCSF 安全事件。chart 暴露的是 JSONL 落盘(server.ocsfLog)，
-  # POC2 写的 [openshell.gateway.otlp.ocsf] 通过 gatewayConfig 直接写 TOML。
-  # 两种都在 08-gateway.sh 里试过，结果按实测记录。
+  # POC2 §8.3: OCSF 安全事件。
+  # 实测更正(2026-11-09): **v0.1.7 是支持 OCSF 走 OTLP 的**，只是 **chart 没有把它暴露成 values**。
+  # 依据是 gateway 镜像里的二进制(strings 级证据，见 ghcr.io/nvidia/openshell/gateway:0.1.7):
+  #   "otlp needs an endpoint, or otlp.ocsf or otlp.agent with enabled = true"
+  #   openshell.gateway.otlp.ocsf.schema_version
+  #   openshell_ocsf_otlp_{queued,exported,retries,export_errors}_total
+  # 之前那句"OTLP 形式的 OCSF 未验证"是**把 chart 的能力当成产品的能力** —— 这类"文档/接口
+  # 没写 ≠ 产品没有"的坑值得单独写进报告。正确做法是用 gatewayConfig 直接写 TOML(下面)。
+  # 两条**都**开着: JSONL 是节点上的持久证据(可 cp 出来做报告附件)，OTLP 是进观测平台的那条。
   ocsfLog:
     enabled: true
     path: /var/openshell/gateway-ocsf.jsonl
@@ -53,4 +59,9 @@ resources:
 # 带 openshell.sandbox.id，且 agent 不需要直接连 Collector。
 gatewayConfig:
   "openshell.gateway.otlp.agent":
+    enabled: true
+  # POC2 §8.3 的原样写法(chart 不暴露这个键，所以走 gatewayConfig 透传 TOML)。
+  # 端点继承上面的 server.otlp.endpoint(同一个 collector 的 4317)。
+  # 验证方法见 13-security-matrix.sh / POC2-CONCLUSIONS §2 的 POC-09。
+  "openshell.gateway.otlp.ocsf":
     enabled: true

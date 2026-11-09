@@ -29,7 +29,11 @@ filesystem_policy:
     - /dev/urandom
     - /etc
     - /var/log
+    # 这就是与 pi-developer.yaml **唯一**的实质差别(注释里说的那"一行")。
+    # 实测坑: 这个文件之前和 developer 版**只差注释**，YAML 里 /data/workspace 仍在
+    # read_write —— 也就是说"Reviewer 只读"这件事在文件里其实没生效，而注释已经写成了
+    # 生效。SEC-06 若只跑这份策略会得到"允许写入"，看起来像 OpenShell 不生效。
+    - /data/workspace
   read_write:
     - /tmp
     - /dev/null
-    - /data/workspace

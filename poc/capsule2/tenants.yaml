@@ -38,16 +38,41 @@ spec:
   # 所以 3 个沙箱(dev + 2 reviewer)实际需要:
   #   limits.cpu   ≥ 300m + 3*500m = 1800m
   #   limits.memory≥ 512Mi + 3*1Gi = 3584Mi
+  #
+  # ===== 2026-11-09 补: 三个实测事实，都会让"按上面算的配额"仍然不够 =====
+  # (A) **每个沙箱会创建两个 Service**(`os-boundary-<pair>` + `os-supervisor-<pair>`)。
+  #     第 5 个沙箱被这条挡住，而且这次报错直接进 CLI(不用翻别的产品日志):
+  #       services "os-boundary-8b80a1f2-…" is forbidden: exceeded quota: capsule-tenant-a-0,
+  #       requested: count/services=1, used: count/services=8, limited: count/services=8
+  #     → **count/services ≥ gateway 自己的 svc + 2×沙箱数**。
+  #     而且 phase=Completed 的沙箱**仍然占着**这两个 Service 与 PVC —— "命令跑完了"不等于
+  #     资源释放，必须真的 `sandbox delete`(见 POC2-CONCLUSIONS 的"沙箱生命周期")。
+  # (B) **先撞到的其实是 requests.memory，不是 limits.memory**。加大 services 之后第 3 个
+  #     Pi 沙箱仍然起不来，CLI 报错和上次一字不差:
+  #       create sandbox failed: timed out waiting for gated workload Pod poc-shared--pi-review-2
+  #     根因还是只在 agent-sandbox 控制器日志里，但换了维度:
+  #       pods "poc-shared--pi-review-2" is forbidden: exceeded quota: capsule-tenant-a-0,
+  #       requested: requests.memory=1Gi, used: requests.memory=2432Mi, limited: requests.memory=2816Mi
+  #     实测一个 **Pi 沙箱**的 requests 开销: agent 1Gi(`--memory` 的值同时成了 requests)
+  #     + 它自己的 supervisor Pod 128mi(LimitRange default) ≈ **1.15Gi / 个**。
+  #     两个沙箱 = 2304Mi，而 runtime ns 只分到 2816Mi → 第 3 个必被挡。
+  #     → **requests.* 也要按沙箱数算**，不能只算 limits.*。
+  # (C) Capsule 会把 tenant 级配额**按 namespace 分摊**(Tenant 写 10 → runtime 8 / gateway 2)。
+  #     所以验证时要读**实际生效**的 ResourceQuota:
+  #       kubectl get resourcequota capsule-tenant-a-0 -n <ns> -o jsonpath={.spec.hard}
+  #     而不是读 Tenant CR 里的数。
+  # 按 3 个 Pi 沙箱 + 排障用的临时 alpine 沙箱重算(services ≥ 2 + 6*2 = 14；
+  # requests.memory ≥ 3*1.2Gi + 余量; limits.memory ≥ 512Mi + 3*1Gi + 余量):
   resourceQuotas:
     items:
       - hard:
-          requests.cpu: "2"
-          requests.memory: 3Gi
-          limits.cpu: "4"
-          limits.memory: 6Gi
+          requests.cpu: "4"
+          requests.memory: 6Gi
+          limits.cpu: "6"
+          limits.memory: 8Gi
           persistentvolumeclaims: "10"
           count/pods: "40"
-          count/services: "10"
+          count/services: "14"
           requests.storage: 20Gi
   limitRanges:
     items:
