@@ -1,0 +1,8 @@
+{
+  "name": "poc3-claims",
+  "protocol": "openid-connect",
+  "attributes": {
+    "include.in.token.scope": "false",
+    "display.on.consent.screen": "false"
+  }
+}

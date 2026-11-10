@@ -1,0 +1,12 @@
+{
+  "name": "poc3-sub-from-ldap",
+  "protocol": "openid-connect",
+  "protocolMapper": "oidc-usermodel-attribute-mapper",
+  "config": {
+    "user.attribute": "LDAP_ID",
+    "claim.name": "sub",
+    "jsonType.label": "String",
+    "id.token.claim": "true",
+    "access.token.claim": "true"
+  }
+}

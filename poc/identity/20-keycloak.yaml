@@ -1,0 +1,144 @@
+# POC3 —— Keycloak 作为**唯一** OIDC 提供商，用户与组全部来自上面的 LDAP。
+#
+# 三条实测前提(都写进结论，因为它们决定了配置形态):
+#  1) kube-apiserver 只接受 **HTTPS** 的 issuer → 前面放一个 nginx 做 TLS 终止；
+#  2) kind 节点**不解析**集群内 DNS → issuer 用**节点 IP** + NodePort(见 certs/gen-issuer-ca.sh 的说明)；
+#  3) OpenShell 侧按 **OIDC subject** 授权(`workspace member add --subject …`)，
+#     所以 `sub` 必须稳定。Keycloak 把 LDAP 用户导入本地时**会换掉内部 id**，
+#     因此下面把 username 映射为 subject，而不是用 Keycloak 自己的 UUID。
+---
+# issuer URL 是**一处定义、三处使用**(Keycloak 的 KC_HOSTNAME / apiserver 的 --oidc-issuer-url /
+# OpenShell 的 oidc.issuer)。写成 ConfigMap 是为了让"三边不一致"这类错误不可能悄悄发生 ——
+# 脚本从这里读，不各自硬编码。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kc-config
+  namespace: identity
+  labels: {app.kubernetes.io/part-of: aisanbox-poc3}
+data:
+  # ⚠ 必须是 https(apiserver 只接受 https)，且必须是**节点 IP**:
+  #   kind 节点不解析集群内 DNS，而宿主 IP 上的 NodePort 需要建集群时就配 extraPortMappings。
+  issuer_url: "https://172.22.0.3:31443"
+  realm: "aisanbox"
+  client_id: "aisanbox-poc3"
+  api_audience: "openshell-api"
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-nginx
+  namespace: identity
+  labels: {app.kubernetes.io/part-of: aisanbox-poc3}
+data:
+  nginx.conf: |
+    worker_processes 1;
+    error_log /dev/stderr warn;
+    pid /tmp/nginx.pid;
+    events { worker_connections 512; }
+    http {
+      access_log /dev/stdout;
+      client_body_temp_path /tmp; proxy_temp_path /tmp; fastcgi_temp_path /tmp;
+      upstream kc { server 127.0.0.1:8080; }
+      server {
+        listen 8443 ssl;
+        ssl_certificate     /etc/tls/tls.crt;
+        ssl_certificate_key /etc/tls/tls.key;
+        location / {
+          proxy_pass http://kc;
+          proxy_set_header Host $host;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto https;
+          # xforwarded 模式下 Keycloak 读的是 X-Forwarded-*，不是 Host；不给 Host 之外的这两条，
+          # 生成的 issuer/回跳 URL 会变成 nginx 内部地址。
+          proxy_set_header X-Forwarded-Host $host;
+          proxy_set_header X-Forwarded-Port 31443;
+        }
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+  namespace: identity
+  labels: {app.kubernetes.io/part-of: aisanbox-poc3, app: keycloak}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}     # 单副本 + 单文件内嵌库；Recreate 避免新旧副本同时持有同一 hostname
+  selector: {matchLabels: {app: keycloak}}
+  template:
+    metadata: {labels: {app: keycloak, app.kubernetes.io/part-of: aisanbox-poc3}}
+    spec:
+      containers:
+        - name: keycloak
+          image: quay.io/keycloak/keycloak:26.4
+          # ⚠ 实测(2026-11-10): 26.4 的 start **没有** --start-deps 这个选项(exit 2, Unknown option)。
+          #   而生产模式下不写 --db 会用已废弃的默认值并告警。这里**显式**给 dev-file:
+          #   单文件内嵌库，POC 够用。**代价必须写下来**: 该文件在容器可写层，Pod 重建 = realm 配置丢失，
+          #   所以下面的 realm/目录联邦是由 30-keycloak-realm.yaml 那个 Job **可重跑**地写入的，不是手工点的。
+          #   生产必须是外部 Postgres(见 POC3-CONCLUSIONS 的"生产化"一节)。
+          args: ["start", "--db=dev-file"]
+          env:
+            - {name: KC_HOSTNAME, valueFrom: {configMapKeyRef: {name: kc-config, key: issuer_url}}}
+            # ⚠ KC_HOSTNAME 决定 issuer 字符串。它必须与 apiserver 的 --oidc-issuer-url、
+            #   OpenShell 的 oidc.issuer **完全一致**(含 scheme 与端口)，否则三边 issuer 不匹配:
+            #   apiserver 会拒绝 token，OpenShell 侧 discovery 会报 issuer mismatch。
+            - {name: KC_HTTP_ENABLED, value: "true"}          # nginx 终止 TLS，KC 只听 HTTP
+            - {name: KC_PROXY_HEADERS, value: "xforwarded"}
+            - {name: KC_BOOTSTRAP_ADMIN_USERNAME, value: "pocadmin"}
+            - {name: KC_BOOTSTRAP_ADMIN_PASSWORD, value: "pocadminpass"}
+            - {name: KC_HEALTH_ENABLED, value: "true"}
+          ports: [{name: http, containerPort: 8080}]
+          readinessProbe:
+            httpGet: {path: /realms/master/.well-known/openid-configuration, port: 8080}
+            initialDelaySeconds: 60
+            periodSeconds: 10
+          resources:
+            requests: {cpu: 200m, memory: 768Mi}
+            limits: {cpu: "1", memory: 1536Mi}     # Keycloak 17+ 需要明显更多内存，给小了会以 exit 137 收场
+        - name: tls
+          image: nginx:1.27
+          command: ["nginx", "-g", "daemon off;", "-c", "/etc/nginx/nginx.conf"]
+          ports: [{name: https, containerPort: 8443}]
+          volumeMounts:
+            - {name: nginx-cfg, mountPath: /etc/nginx/nginx.conf, subPath: nginx.conf, readOnly: true}
+            - {name: issuer-tls, mountPath: /etc/tls, readOnly: true}
+          readinessProbe:
+            tcpSocket: {port: 8443}
+            periodSeconds: 5
+          resources:
+            requests: {cpu: 20m, memory: 32Mi}
+            limits: {cpu: 200m, memory: 128Mi}
+      volumes:
+        - name: nginx-cfg
+          configMap: {name: keycloak-nginx}
+        - name: issuer-tls
+          secret: {secretName: issuer-tls}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+  namespace: identity
+  labels: {app.kubernetes.io/part-of: aisanbox-poc3, app: keycloak}
+spec:
+  type: NodePort
+  selector: {app: keycloak}
+  ports:
+    - {name: https, port: 8443, targetPort: 8443, nodePort: 31443}
+---
+# 管理 API 用的**明文**端口。单独一个 ClusterIP Service 而不是往上面那个 NodePort 里加端口:
+# 那样会白白多分配一个 nodePort，而且 8080 会被暴露到节点上(POC3 的整个前提是 issuer 只走 HTTPS)。
+# Job 里的 kcadm 走这条；对外(apiserver / OpenShell)只走 31443 那条 HTTPS。
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak-admin
+  namespace: identity
+  labels: {app.kubernetes.io/part-of: aisanbox-poc3, app: keycloak}
+spec:
+  type: ClusterIP
+  selector: {app: keycloak}
+  ports: [{name: http, port: 8080, targetPort: 8080}]

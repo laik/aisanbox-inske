@@ -1,0 +1,12 @@
+{
+  "clientId": "poc3-other-aud",
+  "name": "POC3 K-05: same subject, different audience",
+  "enabled": true,
+  "protocol": "openid-connect",
+  "publicClient": true,
+  "standardFlowEnabled": false,
+  "directAccessGrantsEnabled": true,
+  "redirectUris": ["/"],
+  "webOrigins": [],
+  "attributes": {}
+}

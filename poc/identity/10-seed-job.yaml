@@ -1,0 +1,56 @@
+# POC3 —— 把目录数据写成**显式的 seed Job**，而不是依赖镜像的 bootstrap 约定。
+#
+# 为什么(实测 2026-11-10，见 00-ldap.yaml 里的三条对比):
+#   osixia 的 "custom bootstrap ldif" 在三种挂载来源下行为不一致，而且**成功与失败都不报具体原因**
+#   (失败只给 "startup/slapd failed with status 68")。POC 要的是能手工复验、错了能看懂 ——
+#   所以这里直接 ldapadd，并把每一条的返回打出来。
+#
+# 幂等: 用 `ldapadd -c`(条目已存在就跳过继续) + `--single-bind` 无关; 反复跑不会失败。
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ldap-seed
+  namespace: identity
+  labels: {app.kubernetes.io/part-of: aisanbox-poc3}
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata: {labels: {app.kubernetes.io/part-of: aisanbox-poc3}}
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: seed
+          image: osixia/openldap:1.5.0     # 只为拿里面的 ldapadd/ldapsearch 客户端
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              LDIF=/ldif
+              B="dc=aisanbox,dc=example"
+              ADMIN="cn=admin,$B"
+              # 先确认服务可连接，再动手(避免把"还没起来"当成"数据有问题")
+              for i in $(seq 1 30); do
+                if ldapwhoami -x -H ldap://openldap.identity.svc.cluster.local:389 \
+                     -D "$ADMIN" -w pocadminpass >/dev/null 2>&1; then break; fi
+                sleep 3
+              done
+              echo "bind as admin: $(ldapwhoami -x -H ldap://openldap.identity.svc.cluster.local:389 -D "$ADMIN" -w pocadminpass 2>&1)"
+              for f in $(ls $LDIF/*.ldif | sort); do
+                echo "--- applying $f"
+                ldapadd -x -c -H ldap://openldap.identity.svc.cluster.local:389 \
+                        -D "$ADMIN" -w pocadminpass -f "$f" 2>&1 | sed 's/^/    /'
+              done
+              echo "=== 校验(必须是管理员绑定，匿名会被拒绝 —— 见 00-ldap.yaml) ==="
+              ldapsearch -x -H ldap://openldap.identity.svc.cluster.local:389 -D "$ADMIN" -w pocadminpass \
+                -b "$B" "(objectClass=inetOrgPerson)" uid departmentNumber 2>&1 | \
+                grep -E "^(uid|departmentNumber):" | paste - - | sed 's/^/    /'
+              echo "    users=$(ldapsearch -x -H ldap://openldap.identity.svc.cluster.local:389 -D "$ADMIN" -w pocadminpass -b "$B" "(objectClass=inetOrgPerson)" dn 2>&1 | grep -c '^dn:')  groups=$(ldapsearch -x -H ldap://openldap.identity.svc.cluster.local:389 -D "$ADMIN" -w pocadminpass -b ou=groups,$B "(objectClass=groupOfNames)" dn 2>&1 | grep -c '^dn:')"
+          volumeMounts:
+            - {name: ldif, mountPath: /ldif, readOnly: true}
+          resources:
+            requests: {cpu: 20m, memory: 32Mi}
+            limits: {cpu: 200m, memory: 128Mi}
+      volumes:
+        - name: ldif
+          configMap: {name: ldap-bootstrap}

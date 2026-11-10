@@ -1,0 +1,91 @@
+# POC3 §二.1 —— 把目录里的组映射到 K8s 授权。
+#
+# ⚠ 与 POC3.md 约束 1 的一处**必要偏离**(要单独报告): 约束写的是 "只能操作 namespace `tenant-a`"。
+#   但这个平台上 Capsule 开了 forceTenantPrefix，一个 tenant 拥有的是**一组带前缀的 namespace**
+#   (`tenant-a-gateway` / `tenant-a-runtime`)，不存在名叫 `tenant-a` 的 ns。
+#   所以 RBAC 必须按"每个 ns 一份 RoleBinding"来写(下面就是这么做的)，
+#   而不是"一个 namespace 一份"。用 ClusterRoleBinding 会**过度授权**(跨租户全部 ns 都通)。
+#
+# 数据来源只有目录: 下面的 subject 用的组名(tenant-a-users 等)是 LDAP 里 ou=groups 下的条目，
+# 经 Keycloak 的 role-ldap-mapper 进入 token 的 groups claim，再经 --oidc-groups-claim 变成这里的组。
+# 中间**没有**任何手工维护的用户名列表 —— 这是 POC3 §四"隔离假象"能被测出来的前提。
+#
+# ⚠ 谁来做这些绑定: 这里是**平台管理员**创建的(租户开通流程的一部分)。租户 owner 自己改不动它们
+#   (Capsule 的 managed validating webhook 会挡)，这正是"平台定边界、租户在边界内自由"的形态。
+---
+# 一份 ClusterRole 定义"租户成员在自己租户的 ns 里能做什么"，
+# 再按 ns 各建一份 RoleBinding 指向它 —— 规则只写一次，边界按 ns 生效。
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: poc3-tenant-member
+  labels: {app.kubernetes.io/part-of: aisanbox-poc3}
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list"]
+  # 故意**不含**: nodes / namespaces / secrets(全量) / 任何集群级资源。
+  # POC3 §二.2 的第三条用例(tenant-a 用户读 Node 应被拒)靠的就是这里没写。
+---
+# tenant-a: 组 tenant-a-users -> 只在 tenant-a-* 这两个 ns 里生效
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: poc3-tenant-a-users
+  namespace: tenant-a-runtime
+  labels: {app.kubernetes.io/part-of: aisanbox-poc3, platform.example.com/tenant: tenant-a}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: poc3-tenant-member}
+subjects:
+  - {kind: Group, name: tenant-a-users, apiGroup: rbac.authorization.k8s.io}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: poc3-tenant-a-users
+  namespace: tenant-a-gateway
+  labels: {app.kubernetes.io/part-of: aisanbox-poc3, platform.example.com/tenant: tenant-a}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: poc3-tenant-member}
+subjects:
+  - {kind: Group, name: tenant-a-users, apiGroup: rbac.authorization.k8s.io}
+---
+# tenant-b: 对称
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: poc3-tenant-b-users
+  namespace: tenant-b-runtime
+  labels: {app.kubernetes.io/part-of: aisanbox-poc3, platform.example.com/tenant: tenant-b}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: poc3-tenant-member}
+subjects:
+  - {kind: Group, name: tenant-b-users, apiGroup: rbac.authorization.k8s.io}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: poc3-tenant-b-users
+  namespace: tenant-b-gateway
+  labels: {app.kubernetes.io/part-of: aisanbox-poc3, platform.example.com/tenant: tenant-b}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: poc3-tenant-member}
+subjects:
+  - {kind: Group, name: tenant-b-users, apiGroup: rbac.authorization.k8s.io}
+---
+# —— 这是**正对照**(positive control)，不是负对照 ——
+#
+# 矩阵里满屏的 "no" 本身不说明隔离生效: 如果 groups claim 根本没进到 RBAC，
+# 所有人对任何 ns 都会是 "no"，看起来跟"隔离很好"一模一样。
+# 所以必须有一条**期待 yes** 的用例来证明"组 -> 授权"这条链是通的:
+# 把 tenant-b 的组绑到 tenant-a 的 ns，bob 就**应当**能读 tenant-a-runtime。
+# 它不成立，则整张拒绝矩阵全部作废(测的是工具，不是隔离)。
+# 跑完 14 号脚本的相应用例后由脚本解掉这份。
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: poc3-negative-control-b-in-a
+  namespace: tenant-a-runtime
+  labels: {app.kubernetes.io/part-of: aisanbox-poc3, poc3.example.com/kind: negative-control}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: poc3-tenant-member}
+subjects:
+  - {kind: Group, name: tenant-b-users, apiGroup: rbac.authorization.k8s.io}

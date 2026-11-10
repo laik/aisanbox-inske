@@ -1,0 +1,24 @@
+# POC3 §三 —— 让 CLI 能**稳定**连上这台 Gateway。
+#
+# ⚠ 不用 `kubectl port-forward`(2026-16-10 实测更正):
+#   POC2 的脚本用 port-forward，那是因为它的 CLI 与集群在同一台机器上、且只跑几秒。
+#   POC3 的矩阵要**逐个身份登录 + 几十次调用**，port-forward 是一条普通用户进程:
+#     - 它在两次 ssh 之间会被回收，之后的每个调用都变成
+#           Error: × connect error: transport error
+#       —— 这个报错读起来像"gateway 挂了/权限被拒"，实际是**隧道断了**。
+#     - 它也不经负载与 Service 网络，测的不是真实路径。
+#   这个集群是 **kind** —— 节点就是宿主机上的容器，宿主机直接路由到节点 IP(172.22.0.0/16)，
+#   所以 NodePort 在宿主机上直接可用(poc/identity 的 issuer 就是这么访问的，见 20-keycloak.yaml)。
+#   代价: NodePort 多占一个节点端口；生产上这里应该是 Gateway 自己的 Ingress/LB + 受信 CA。
+apiVersion: v1
+kind: Service
+metadata:
+  name: poc3-gateway-nodeport
+  namespace: poc3-gateway
+  labels: {app.kubernetes.io/part-of: aisanbox-poc3}
+spec:
+  type: NodePort
+  # 与 deployment 的 selector 一致(chart 打好的标签，不自己发明)
+  selector: {app.kubernetes.io/name: openshell, app.kubernetes.io/instance: p3}
+  ports:
+    - {name: grpc, port: 8080, targetPort: 8080, nodePort: 31444}

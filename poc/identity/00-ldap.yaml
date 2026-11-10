@@ -1,0 +1,158 @@
+# POC3 §身份源 —— 用 OpenLDAP 扮演"我方自研 LDAP Server"。
+#
+# 为什么用它而不是真写一个 LDAP Server: POC3 要验证的是**租户身份只能来自目录**这条链路，
+# 不是目录本身的实现。所以这里刻意把租户信息只放在目录里(组 + departmentNumber 属性)，
+# Keycloak / K8s / OpenShell 三边都**不手工复制**一份 —— 这样"角色映射没生效"这类失效
+# 才是可观察的，而不是被手工配置掩盖掉。
+#
+# 实测环境限制(2026-11-10): 这台宿主上 `bitnami/openldap`(2.6.22 / latest) 与
+# `389ds/389-ds-base` 都**拉不下来**，`osixia/openldap:1.5.0` 可以。换镜像前先 crictl pull 试。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ldap-bootstrap
+  namespace: identity
+  labels: {app.kubernetes.io/part-of: aisanbox-poc3}
+data:
+  # 这些 LDIF 由 10-seed-job.yaml **显式 ldapadd**，不走 osixia 的 bootstrap。原因见下面
+  # volumeMounts 处的实测说明。
+  00-base.ldif: |
+    dn: ou=people,dc=aisanbox,dc=example
+    changetype: add
+    objectClass: organizationalUnit
+    ou: people
+
+    dn: ou=groups,dc=aisanbox,dc=example
+    changetype: add
+    objectClass: organizationalUnit
+    ou: groups
+  10-tenant-users.ldif: |
+    dn: cn=tenant-a-users,ou=groups,dc=aisanbox,dc=example
+    changetype: add
+    cn: tenant-a-users
+    objectClass: groupOfNames
+    member: uid=alice,ou=people,dc=aisanbox,dc=example
+    member: uid=tadmin,ou=people,dc=aisanbox,dc=example
+
+    dn: cn=tenant-b-users,ou=groups,dc=aisanbox,dc=example
+    changetype: add
+    cn: tenant-b-users
+    objectClass: groupOfNames
+    member: uid=bob,ou=people,dc=aisanbox,dc=example
+
+    # Capsule 判定租户归属看的是 Tenant.spec.owners 里的 **Group 名**。把 tenant-a-owners
+    # 也放进目录，OIDC 用户才能真正成为 tenant 的 owner(而不是像第二轮那样靠 --as-group 假装)。
+    dn: cn=tenant-a-owners,ou=groups,dc=aisanbox,dc=example
+    changetype: add
+    cn: tenant-a-owners
+    objectClass: groupOfNames
+    member: uid=alice,ou=people,dc=aisanbox,dc=example
+
+    dn: cn=tenant-b-owners,ou=groups,dc=aisanbox,dc=example
+    changetype: add
+    cn: tenant-b-owners
+    objectClass: groupOfNames
+    member: uid=bob,ou=people,dc=aisanbox,dc=example
+
+    # OpenShell 的角色也来自目录组 —— 这样"OpenShell 角色"和"K8s 组"是**同一份数据**。
+    dn: cn=os-user,ou=groups,dc=aisanbox,dc=example
+    changetype: add
+    cn: os-user
+    objectClass: groupOfNames
+    member: uid=alice,ou=people,dc=aisanbox,dc=example
+    member: uid=bob,ou=people,dc=aisanbox,dc=example
+    member: uid=tadmin,ou=people,dc=aisanbox,dc=example
+
+    dn: cn=os-admin,ou=groups,dc=aisanbox,dc=example
+    changetype: add
+    cn: os-admin
+    objectClass: groupOfNames
+    member: uid=tadmin,ou=people,dc=aisanbox,dc=example
+
+    dn: uid=alice,ou=people,dc=aisanbox,dc=example
+    changetype: add
+    uid: alice
+    cn: Alice TenantA
+    sn: TenantA
+    mail: alice@aisanbox.example
+    objectClass: inetOrgPerson
+    userPassword: poc3pass
+    departmentNumber: tenant-a
+
+    dn: uid=tadmin,ou=people,dc=aisanbox,dc=example
+    changetype: add
+    uid: tadmin
+    cn: TAMin TenantA
+    sn: TenantA
+    mail: tadmin@aisanbox.example
+    objectClass: inetOrgPerson
+    userPassword: poc3pass
+    departmentNumber: tenant-a
+
+    dn: uid=bob,ou=people,dc=aisanbox,dc=example
+    changetype: add
+    uid: bob
+    cn: Bob TenantB
+    sn: TenantB
+    mail: bob@aisanbox.example
+    objectClass: inetOrgPerson
+    userPassword: poc3pass
+    departmentNumber: tenant-b
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openldap
+  namespace: identity
+  labels: {app.kubernetes.io/part-of: aisanbox-poc3, app: openldap}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: openldap}}
+  template:
+    metadata: {labels: {app: openldap, app.kubernetes.io/part-of: aisanbox-poc3}}
+    spec:
+      containers:
+        - name: openldap
+          image: osixia/openldap:1.5.0
+          args: ["--copy-service"]
+          env:
+            - {name: LDAP_ORGANISATION, value: "aisanbox"}
+            - {name: LDAP_DOMAIN, value: "aisanbox.example"}
+            # 目录管理员口令。POC 里明文可接受；生产要用 Secret + 外部 KMS。
+            - {name: LDAP_ADMIN_PASSWORD, value: "pocadminpass"}
+            - {name: LDAP_CONFIG_ADMIN_ENABLED, value: "yes"}
+            - {name: LDAP_CONFIG_ADMIN_PASSWORD, value: "pocconfigpass"}
+          ports: [{name: ldap, containerPort: 389}]
+          # ⚠ 不要用 osixia 的 "custom bootstrap ldif" 机制装载测试数据(实测三种结果，全都不可靠):
+          #   (1) 挂到 /container/slap/add(名字很像) → 日志照样打印 "Add custom bootstrap ldif..."，
+          #       实际**一条都没加**，也不报错;
+          #   (2) 挂到正确路径、来源是**宿主机目录 bind mount** → 正常加载(我用 docker 复现过);
+          #   (3) 同样内容来自 **ConfigMap** 挂到正确路径 → **启动失败**，
+          #       只给 "/container/run/startup/slapd failed with status 68"，**不打印 ldapadd 的报错**。
+          #   而且 bootstrap **只在首次建库时**执行，改了 LDIF 不换库就等于没改。
+          #   ⇒ 结论: 目录数据用**独立的 seed Job 显式 ldapadd**(见 10-seed-job.yaml)，错误可见、可重跑。
+          # ⚠ **不要**给 /var/lib/ldap 挂 emptyDir。挂了之后容器一重启就会死循环:
+            #   /var/lib/ldap(emptyDir)留着、/etc/ldap/slapd.d(容器可写层)被重置 → osixia 判定
+            #     "Error: the config directory (/etc/ldap/slapd.d) is empty but not the database
+            #      directory (/var/lib/ldap)" → 直接退出，readiness 永远失败，看不到 LDIF 相关报错。
+            #   POC 里目录是**测试数据本身**，Pod 重建 = 重新 bootstrap，不需要持久化。
+          readinessProbe:
+            tcpSocket: {port: 389}
+            periodSeconds: 5
+          # ⚠ 这个镜像默认**不允许匿名读后缀**(匿名 search 会拿到 result: 32 "No such object"，
+          #   而 bind 却成功)。所以校验必须**先 bind 成管理员**，否则会把"没权限"读成"目录是空的"。
+          resources:
+            requests: {cpu: 50m, memory: 96Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+      volumes: []   # 不再挂 bootstrap: 目录数据由 seed Job 写入
+---
+# Keycloak 通过它访问目录。用 ClusterIP 就够(两侧都在集群内)。
+apiVersion: v1
+kind: Service
+metadata:
+  name: openldap
+  namespace: identity
+  labels: {app.kubernetes.io/part-of: aisanbox-poc3, app: openldap}
+spec:
+  selector: {app: openldap}
+  ports: [{name: ldap, port: 389, targetPort: 389}]

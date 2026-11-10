@@ -1,0 +1,22 @@
+{
+  "name": "tenant-attr",
+  "providerId": "user-attribute-ldap-mapper",
+  "providerType": "org.keycloak.storage.ldap.mappers.LDAPStorageMapper",
+  "config": {
+    "user.model.attribute": [
+      "tenant"
+    ],
+    "ldap.attribute": [
+      "departmentNumber"
+    ],
+    "read.only": [
+      "true"
+    ],
+    "always.read.value.from.ldap": [
+      "true"
+    ],
+    "is.mandatory.in.ldap": [
+      "true"
+    ]
+  }
+}

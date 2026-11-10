@@ -29,6 +29,10 @@
 # 5) 每个沙箱会建**两个 Service**(os-boundary-* / os-supervisor-*)，`count/services` 是
 #    实际最先撞到的配额(见 capsule2/tenants.yaml 的算术)。而且 phase=Completed 的沙箱
 #    **仍然占着**这两个 Service —— 必须真的 `sandbox delete`。
+# 6) **本地模型有时会返回空，且 pi 的退出码是 0**: 同一个 prompt/模型/配置下，实测两个 Reviewer
+#    一个 `/tmp/rev-1.out` 是 0 字节、另一个 300 字节。所以"两个 Agent 各自给出 review 结论"
+#    是**不确定**的(模型侧)。平台侧确定的是: 共享可见 + 只读强制 + 并行不互斥。下面 §5 会打
+#    输出的字节数，就是为了让"空输出"看得见、不被误读成共享失败。
 set -uo pipefail
 cd "$(dirname "$0")/.."
 CTX=kind-agent-runtime-poc
@@ -121,7 +125,7 @@ for r in 1 2; do
     echo "     [看 Developer 的改动]"; cd /data/workspace/godotenv 2>/dev/null && git status --short && ls -l poc_extra_test.go 2>&1 | tail -1
     echo "     [读 Developer 的 marker]"; head -c 1 /data/workspace/dev-marker >/dev/null 2>&1 && echo "     READ_MARKER_OK"
     echo "     [SEC-06 写入必须失败]"; touch /data/workspace/reviewer-test.txt 2>&1 || true
-    echo "     [挂载层证据(K8s mount RO)]"; grep "/data/workspace" /proc/self/mountinfo | awk "{print \"     mount_flags=\" \$4}"' 2>&1
+    echo "     [挂载层证据(K8s mount RO)]"; grep "/data/workspace" /proc/self/mountinfo | awk "{for(i=1;i<=NF;i++) if(\$i==\"/data/workspace\"){print \"mount_flags=\" \$(i+1); break}}"' 2>&1
 done
 echo "   两个 Reviewer 并行读同一份代码(POC-10 的「并行 Review」部分，不修改):"
 for r in 1 2; do
@@ -129,7 +133,13 @@ for r in 1 2; do
      timeout 600 pi --model poc-model/qwen3.8-flash-next -p "Review the changes in this repo (read-only). Report findings with severity and file:line. Do NOT modify any file." </dev/null 2>/dev/null | tail -c 300' > "/tmp/rev-$r.out" 2>&1 ) &
 done
 wait
-for r in 1 2; do echo "   --- Reviewer $r:"; tail -c 300 "/tmp/rev-$r.out" | sed 's/^/     /'; echo; done
+for r in 1 2; do
+  # 先把**字节数**打出来: 本地模型有时会**返回空**(退出码仍是 0)，实测过一个 0 字节、另一个 300 字节。
+  # 不打这个数，空输出会被读成"共享/并行失败了" —— 那是模型侧，不是平台侧(见文件头坑 6)。
+  echo "   --- Reviewer $r (输出 $(wc -c < "/tmp/rev-$r.out" 2>/dev/null || echo 0) 字节):"
+  tail -c 300 "/tmp/rev-$r.out" | sed 's/^/     /'
+  echo
+done
 
 echo
 echo "### 6. 两条强制层要**分开**证(POC2 §10.5 说不能只看 YAML)"
@@ -138,9 +148,12 @@ A sandbox create --name ctl-polro --from alpine:latest --cpu 50m --memory 64Mi -
   --policy /tmp/pol/rev.yaml --driver-config-json "$(DC shared-workspace false)" -- sh -c 'sleep 300' >/dev/null 2>&1
 sleep 30
 echo "   (a) 挂载 rw + 策略只读:"
-A sandbox exec ctl-polro -- sh -c 'grep "/data/workspace" /proc/self/mountinfo | awk "{print \"     mount_flags=\" \$1\" \"\$4}"; touch /data/workspace/x 2>&1 | sed "s/^/     /"; echo "     结果: mountinfo 显示 rw 但写被拒 => 强制发生在 OpenShell 策略层"'
-echo "   (b) 挂载 ro + 策略可写(上一轮已证): 报错是 `Read-only file system`(EROFS)，
-       来自 Kubernetes 挂载层。两种 errno 不同，正好说明是**两层独立**的强制。"
+A sandbox exec ctl-polro -- sh -c 'grep "/data/workspace" /proc/self/mountinfo | awk "{for(i=1;i<=NF;i++) if(\$i==\"/data/workspace\"){print \"mount_flags=\" \$(i+1); break}}"; touch /data/workspace/x 2>&1 | sed "s/^/     /"; echo "     结果: mountinfo 显示 rw 但写被拒 => 强制发生在 OpenShell 策略层"'
+echo "   (b) 挂载 ro + 策略可写: 报错是「Read-only file system」(EROFS)，来自 Kubernetes 挂载层。"
+echo "       完整对照见 phases/13-security-matrix.sh 的 SEC-06/07(它同时建 sec-polonly / sec-mtonly)。"
+echo "       两种 errno 不同(EACCES vs EROFS)，正好说明是**两层独立**的强制。"
+echo "       ⚠ 这段文案里不要用反引号: 双引号内的反引号会做命令替换，实测报"
+echo "         \"Read-only: command not found\"，把结论行整行吃掉了(2026-11-09 踩过)。"
 
 echo
 echo "### 7. 生命周期: 删掉 Reviewer 不影响共享 PVC(§10.5 最后两条)"

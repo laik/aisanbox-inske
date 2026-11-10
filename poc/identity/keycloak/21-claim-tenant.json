@@ -1,0 +1,15 @@
+{
+  "name": "poc3-tenant",
+  "protocol": "openid-connect",
+  "protocolMapper": "oidc-usermodel-attribute-mapper",
+  "config": {
+    "user.attribute": "tenant",
+    "claim.name": "tenant",
+    "jsonType.label": "String",
+    "id.token.claim": "true",
+    "access.token.claim": "true",
+    "userinfo.token.claim": "false",
+    "introspection.token.claim": "true",
+    "lightweight.claim": "false"
+  }
+}

@@ -1,0 +1,61 @@
+# POC3 —— 自研 LDAP 的模拟实现(用 OpenLDAP 扮演"我方 LDAP Server")。
+# 关键: 租户身份只存在于**目录里**(组 + 属性)，不在 Keycloak 也不在 K8s 里手工复制一遍。
+# 这样"Keycloak 角色映射未生效"这类失效才是可观察的。
+dn: cn=tenant-a-users,ou=groups,dc=aisanbox,dc=example
+changetype: add
+cn: tenant-a-users
+objectClass: groupOfNames
+member: uid=alice,ou=people,dc=aisanbox,dc=example
+member: uid=tadmin,ou=people,dc=aisanbox,dc=example
+
+dn: cn=tenant-b-users,ou=groups,dc=aisanbox,dc=example
+changetype: add
+cn: tenant-b-users
+objectClass: groupOfNames
+member: uid=bob,ou=people,dc=aisanbox,dc=example
+
+dn: cn=os-user,ou=groups,dc=aisanbox,dc=example
+changetype: add
+cn: os-user
+objectClass: groupOfNames
+member: uid=alice,ou=people,dc=aisanbox,dc=example
+member: uid=bob,ou=people,dc=aisanbox,dc=example
+member: uid=tadmin,ou=people,dc=aisanbox,dc=example
+
+# tadmin = tenant-a 的 OpenShell 管理员(用来测"改策略/建 Provider 应当被允许")
+dn: cn=os-admin,ou=groups,dc=aisanbox,dc=example
+changetype: add
+cn: os-admin
+objectClass: groupOfNames
+member: uid=tadmin,ou=people,dc=aisanbox,dc=example
+
+dn: uid=alice,ou=people,dc=aisanbox,dc=example
+changetype: add
+uid: alice
+cn: Alice TenantA
+sn: TenantA
+mail: alice@aisanbox.example
+objectClass: inetOrgPerson
+userPassword: poc3pass
+# 租户标识来自目录属性(不是 Keycloak 里手工设的)，下游两侧都据此隔离
+departmentNumber: tenant-a
+
+dn: uid=tadmin,ou=people,dc=aisanbox,dc=example
+changetype: add
+uid: tadmin
+cn: TAMin TenantA
+sn: TenantA
+mail: tadmin@aisanbox.example
+objectClass: inetOrgPerson
+userPassword: poc3pass
+departmentNumber: tenant-a
+
+dn: uid=bob,ou=people,dc=aisanbox,dc=example
+changetype: add
+uid: bob
+cn: Bob TenantB
+sn: TenantB
+mail: bob@aisanbox.example
+objectClass: inetOrgPerson
+userPassword: poc3pass
+departmentNumber: tenant-b

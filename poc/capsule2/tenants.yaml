@@ -21,6 +21,32 @@ spec:
       labels:
         platform.example.com/tenant: tenant-a
   forceTenantPrefix: true
+  # ── POC3 补上的**平台级租户网络隔离**(2026-11-10 实测)。这修正了 POC2 §5.4 里
+    #   "跨租户网络隔离不是平台能力"那条 —— 当时 Tenant 里**没有**这个字段，
+    #   所以跨租户的两个普通 Pod 是 REACHED。补上之后同一条测试变成 BLOCKED(见 phases/14 的 2b 节)。
+    #
+    # ⚠ 三条实测约束(都是硬结论，不是风格):
+    #  1) 只支持 `items`。写 `generate:` 会被 strict decoding 直接拒掉
+    #     (unknown field "generate") —— 0.15.2 没有这个字段。
+    #  2) 整个字段在 0.15.2 已**标为 deprecated**，webhook 会提示改用 TenantReplications。
+    #     现在能用，但升级前要按新方式重写。
+    #  3) **可加性**: NetworkPolicy 的语义是并集。租户自己建一条 Ingress 策略就能把
+    #     这条边界**放宽**(实测: 加 p3-reopen 之后 a->b 从 BLOCKED 变 REACHED，撤掉又恢复)。
+    #     要"画了就不能改"，得用 spec.rules.enforce.policies 或 Antrea ClusterNetworkPolicy。
+    #
+    # 已存在的 namespace **不会**被跳过: 控制器会 reconcile 并在每个租户 ns 里
+    # 生成/更新 `capsule-tenant-<t>-0`(ownerRef 指向 Tenant，带
+    # capsule.clastix.io/network-policy 标签)，新建的 tenant-a-* ns 自动继承。
+    # 租户 owner 删不掉也改不了这些被管的策略 —— 边界是平台画的。
+  networkPolicies:
+    items:
+      - podSelector: {}
+        policyTypes: ["Ingress"]
+        ingress:
+          - from:
+              - namespaceSelector:
+                  matchLabels:
+                    capsule.clastix.io/tenant: tenant-a   # 只允许同租户的 ns 进来
   # 配额要按**一个沙箱的真实开销**来算，不是按"agent 容器"。
   # 实测(第二轮，第一次跑 3 沙箱场景时): 第 3 个沙箱起不来，CLI 只说
   #   create sandbox failed: timed out waiting for gated workload Pod poc-shared--git-test
@@ -97,6 +123,32 @@ spec:
       labels:
         platform.example.com/tenant: tenant-b
   forceTenantPrefix: true
+  # ── POC3 补上的**平台级租户网络隔离**(2026-11-10 实测)。这修正了 POC2 §5.4 里
+    #   "跨租户网络隔离不是平台能力"那条 —— 当时 Tenant 里**没有**这个字段，
+    #   所以跨租户的两个普通 Pod 是 REACHED。补上之后同一条测试变成 BLOCKED(见 phases/14 的 2b 节)。
+    #
+    # ⚠ 三条实测约束(都是硬结论，不是风格):
+    #  1) 只支持 `items`。写 `generate:` 会被 strict decoding 直接拒掉
+    #     (unknown field "generate") —— 0.15.2 没有这个字段。
+    #  2) 整个字段在 0.15.2 已**标为 deprecated**，webhook 会提示改用 TenantReplications。
+    #     现在能用，但升级前要按新方式重写。
+    #  3) **可加性**: NetworkPolicy 的语义是并集。租户自己建一条 Ingress 策略就能把
+    #     这条边界**放宽**(实测: 加 p3-reopen 之后 a->b 从 BLOCKED 变 REACHED，撤掉又恢复)。
+    #     要"画了就不能改"，得用 spec.rules.enforce.policies 或 Antrea ClusterNetworkPolicy。
+    #
+    # 已存在的 namespace **不会**被跳过: 控制器会 reconcile 并在每个租户 ns 里
+    # 生成/更新 `capsule-tenant-<t>-0`(ownerRef 指向 Tenant，带
+    # capsule.clastix.io/network-policy 标签)，新建的 tenant-a-* ns 自动继承。
+    # 租户 owner 删不掉也改不了这些被管的策略 —— 边界是平台画的。
+  networkPolicies:
+    items:
+      - podSelector: {}
+        policyTypes: ["Ingress"]
+        ingress:
+          - from:
+              - namespaceSelector:
+                  matchLabels:
+                    capsule.clastix.io/tenant: tenant-b   # 只允许同租户的 ns 进来
   resourceQuotas:
     items:
       - hard:

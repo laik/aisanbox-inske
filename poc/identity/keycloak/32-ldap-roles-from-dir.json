@@ -1,0 +1,17 @@
+{
+  "name": "dir-roles",
+  "providerId": "role-ldap-mapper",
+  "providerType": "org.keycloak.storage.ldap.mappers.LDAPStorageMapper",
+  "config": {
+    "roles.dn": ["ou=groups,dc=aisanbox,dc=example"],
+    "role.name.ldap.attribute": ["cn"],
+    "role.object.classes": ["groupOfNames"],
+    "membership.ldap.attribute": ["member"],
+    "membership.attribute.type": ["DN"],
+    "membership.user.ldap.attribute": ["uid"],
+    "mode": ["LDAP_ONLY"],
+    "user.roles.retrieve.strategy": ["LOAD_ROLES_BY_MEMBER_ATTRIBUTE"],
+    "use.realm.roles.mapping": ["true"],
+    "roles.ldap.filter": ["(cn=*)"]
+  }
+}

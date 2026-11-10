@@ -1,0 +1,20 @@
+{
+  "name": "ldap-poc3",
+  "providerId": "ldap",
+  "providerType": "org.keycloak.storage.UserStorageProvider",
+  "config": {
+    "connectionUrl": ["ldap://openldap.identity.svc.cluster.local:389"],
+    "usersDn": ["ou=people,dc=aisanbox,dc=example"],
+    "userObjectClasses": ["inetOrgPerson"],
+    "usernameLDAPAttribute": ["uid"],
+    "rdnLDAPAttribute": ["uid"],
+    "uuidLDAPAttribute": ["entryUUID"],
+    "authType": ["simple"],
+    "bindDn": ["cn=admin,dc=aisanbox,dc=example"],
+    "bindCredential": ["pocadminpass"],
+    "searchScope": ["2"],
+    "editMode": ["READ_ONLY"],
+    "importEnabled": ["true"],
+    "trustEmail": ["false"]
+  }
+}

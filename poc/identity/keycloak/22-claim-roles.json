@@ -1,0 +1,15 @@
+{
+  "name": "poc3-roles",
+  "protocol": "openid-connect",
+  "protocolMapper": "oidc-usermodel-realm-role-mapper",
+  "config": {
+    "claim.name": "groups",
+    "jsonType.label": "String",
+    "multivalued": "true",
+    "id.token.claim": "true",
+    "access.token.claim": "true",
+    "userinfo.token.claim": "false",
+    "introspection.token.claim": "true",
+    "lightweight.claim": "false"
+  }
+}

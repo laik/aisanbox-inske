@@ -82,7 +82,7 @@ things itself**: place the client-TLS bundle in the runtime ns, and govern the a
 | POC-01 每租户独立 Gateway<br>Per-tenant independent Gateway | ✅ 通过 / PASS | 两个 Gateway 各自 mTLS 认证、各自 `gateway_id`、各自 SQLite PVC；两边都建出同名 workspace `poc-shared` 且互不可见；`auth can-i` 显示 A 的 SA 在 B 的 runtime ns 里是 `no`<br>Each Gateway authenticates over its own mTLS, has its own `gateway_id` and its own SQLite PVC; both create a workspace named `poc-shared` yet neither sees the other; `auth can-i` shows A's SA as `no` in B's runtime ns |
 | POC-02 Capsule 租户隔离<br>Capsule tenant isolation | ✅ 通过(比预期更强) / PASS (stronger than expected) | 归属只在创建时由 webhook 注入(不能事后追认)；`ForceTenantPrefix` 拦住跨租户命名；**配额真的管住了 OpenShell 创建的沙箱**：`exceeded quota: capsule-tenant-a-0, requested: limits.memory=1Gi, used: 2Gi, limited: 2560Mi`<br>Ownership is injected by the webhook only at creation time (no retroactive adoption); `ForceTenantPrefix` blocks cross-tenant naming; **the quota really did govern sandboxes created by OpenShell**: `exceeded quota: capsule-tenant-a-0, requested: limits.memory=1Gi, used: 2Gi, limited: 2560Mi` |
 | POC-03 Gateway 管理多个 Sandbox<br>One Gateway manages multiple Sandboxes | ✅ 通过(3 个并发) / PASS (3 concurrent) | 2026-11-09: 同一个 Gateway 下 `pi-dev` + `pi-review-1` + `pi-review-2` 同时 Ready。**之前挡住第 3 个的是两个配额维度**，都不是 OpenShell 的问题: ① `count/services` —— 每个沙箱会建 **两个 Service**(`os-boundary-<pair>` + `os-supervisor-<pair>`)，报错直接进 CLI; ② `requests.memory` —— 一个 Pi 沙箱的 **requests** 是 1Gi(agent) + 128mi(它自己的 supervisor) ≈ **1.15Gi**，CLI 只说 `timed out waiting for gated workload Pod`。算术见 `capsule2/tenants.yaml`。<br>On 2026-11-09, `pi-dev` + `pi-review-1` + `pi-review-2` were Ready at the same time under one Gateway. **Two separate quota dimensions had blocked the third**, neither an OpenShell defect: (1) `count/services` — every sandbox creates **two Services** (`os-boundary-<pair>` + `os-supervisor-<pair>`), and this one does surface in the CLI; (2) `requests.memory` — a Pi sandbox's **requests** are 1Gi (agent) + 128mi (its own supervisor) ≈ **1.15Gi**, while the CLI only says `timed out waiting for gated workload Pod`. Arithmetic is in `capsule2/tenants.yaml` |
-| POC-04 多 Sandbox 共享 Workspace<br>Multiple Sandboxes share a Workspace | ✅ 通过(含跨节点) / PASS (incl. cross-node) | `phases/11-pi-scenario.sh` 已写并跑通: `pi-dev` 用 RW 挂 `shared-workspace`，clone 项目、跑 `go test`、让 Pi 写了一个**真的能过的新测试**(`poc_extra_test.go`); 两个 Reviewer 用 RO 挂同一个 PVC，**都看到了这个文件**(`git status` 里可见、`wc -l` 38 行)，写入被拒。跨节点也成立: dev 在 `worker2`，被 `node_selector` 强制到 `worker` 的沙箱读到同一个文件、写入同样被拒。<br>**之前判 ❌ 的直接原因: `policies/pi-reviewer.yaml` 的 YAML 与 developer 版一字不差** —— `/data/workspace` 还在 `read_write` 里，注释却已经写成"只读"。测法与文件都错，不是平台不行。<br>`phases/11-pi-scenario.sh` is written and ran: `pi-dev` mounts `shared-workspace` RW, clones the project, runs `go test`, and has Pi write a **new test that actually passes** (`poc_extra_test.go`); both Reviewers mount the same PVC read-only, **both see that file** (visible in `git status`, `wc -l` = 38 lines), and their writes are denied. Cross-node holds too: dev ran on `worker2` while a sandbox forced by `node_selector` onto `worker` read the same file and was likewise denied. **The direct reason for the earlier ❌: the reviewer policy's YAML was byte-identical to the developer's** — `/data/workspace` was still under `read_write` while the comments already claimed read-only. Both the file and the test were wrong; the platform was not. |
+| POC-04 多 Sandbox 共享 Workspace<br>Multiple Sandboxes share a Workspace | ✅ 通过(含跨节点) / PASS (incl. cross-node) | `phases/11-pi-scenario.sh` 已写并跑通: `pi-dev` 用 RW 挂 `shared-workspace`，clone 项目、跑 `go test`、让 Pi 写了一个**真的能过的新测试**(`poc_extra_test.go`); 两个 Reviewer 用 RO 挂同一个 PVC，**都看到了这个文件**(`git status` 里可见、`wc -l` 有内容)，写入被拒。跨节点也成立: dev 在 `worker2`，被 `node_selector` 强制到 `worker` 的沙箱读到同一个文件、写入同样被拒。<br>**之前判 ❌ 的直接原因: `policies/pi-reviewer.yaml` 的 YAML 与 developer 版一字不差** —— `/data/workspace` 还在 `read_write` 里，注释却已经写成"只读"。测法与文件都错，不是平台不行。<br>`phases/11-pi-scenario.sh` is written and ran: `pi-dev` mounts `shared-workspace` RW, clones the project, runs `go test`, and has Pi write a **new test that actually passes** (`poc_extra_test.go`); both Reviewers mount the same PVC read-only, **both see that file** (visible in `git status`, `wc -l` non-empty), and their writes are denied. Cross-node holds too: dev ran on `worker2` while a sandbox forced by `node_selector` onto `worker` read the same file and was likewise denied. **The direct reason for the earlier ❌: the reviewer policy's YAML was byte-identical to the developer's** — `/data/workspace` was still under `read_write` while the comments already claimed read-only. Both the file and the test were wrong; the platform was not. |
 | POC-05 Antrea 网络隔离<br>Antrea network isolation | ✅ 通过 / PASS | 9/9：无策略通、deny-all 拦、白名单只放行被选中的 Pod；并进了 Antrea 控制面与 OVS 流表(123→135→123)，跨节点路径<br>9/9: traffic passes with no policy, deny-all blocks it, and the allow-list admits only the selected Pod; verified in the Antrea control plane and OVS flow tables (123→135→123) across nodes |
 | POC-06 Gatekeeper 准入<br>Gatekeeper admission | ✅ 通过(且作用域精确) / PASS (with precise scope) | privileged / hostNetwork / hostPID / hostPath / 借用平台 SA 全部被 `[poc-tenant-pod-boundary]` 拒；**同一个 ns 内**平台 SA 身份通过、租户身份被拒 —— 没有任何 ns 级豁免<br>privileged / hostNetwork / hostPID / hostPath / borrowing a platform SA are all rejected by `[poc-tenant-pod-boundary]`; **within the same ns** the platform SA identity passes while the tenant identity is rejected — no namespace-level exemption |
 | POC-07 Tetragon 行为观测<br>Tetragon behavior observability | ✅ 观测通过 / ⚠️ 强制受限<br>PASS for observation / PARTIAL for enforcement | exec、exit、connect(五元组)、parent、pod/namespace/容器/镜像身份都在事件里。但**这台宿主的内核 LSM 列表没有 `bpf`**(`lockdown,capability,landlock,yama,apparmor`)，基于 lsm hook 的策略加载失败<br>exec, exit, connect (5-tuple), parent, pod/namespace/container/image identity all appear in events. But **this host's kernel LSM list lacks `bpf`** (`lockdown,capability,landlock,yama,apparmor`), so policies based on lsm hooks fail to load |
@@ -117,10 +117,11 @@ queried.
 | SEC-09 不安全 Pod<br>Unsafe Pod | ✅ | 见 POC-06<br>See POC-06 |
 | SEC-10 租户直接创建 Sandbox CR<br>Tenant creates a Sandbox CR directly | ✅ | 两层分开测：RBAC 先拒；**故意把权限给租户之后**，`[poc-managed-cr-only-platform]` 仍然拒<br>Tested as two layers: RBAC denies first; **after deliberately granting the tenant the permission**, `[poc-managed-cr-only-platform]` still denies |
 | SEC-11 Agent 读不到 Provider Token<br>Agent cannot read the Provider token | ✅ | 沙箱里 `OPENAI_API_KEY=openshell:resolve:env:v7305…_OPENAI_API_KEY`，是**代理占位符**；真实 key 只在边界上注入(请求能成功即证明)<br>Inside the sandbox `OPENAI_API_KEY=openshell:resolve:env:v7305…_OPENAI_API_KEY`, a **proxy placeholder**; the real key is injected only at the boundary (a successful request proves it) |
+| SEC-13 另一个进程绕过工具调用直接出网<br>Another process reaching the network without tool calls | ✅ 成立(比预期更强) / holds (stronger than expected) | 被测进程 = 镜像里的 `node`，直接开**原始 socket**(不经 Pi、不经任何工具调用)。**正对照**: 连自己的 `supervisor:5500` = `CONNECTED`(缺这条整段不可用——踩过：Service clusterIP 取空会得到 ECONNREFUSED，看着像被拦)。其余全断：`10.96.0.1:443` TIMEOUT；`1.1.1.1:443`(写死 IP、跳过 DNS) TIMEOUT；`dns.lookup` = `EAI_AGAIN`。拦它的是 §5.4/§3.4 那两条 NetworkPolicy(**L4**)，不是 OpenShell 的 L7 策略 —— 所以"绕过 Agent 工具层"这条路不存在。<br>The process under test is `node` from the image, opening a **raw socket** (no Pi, no tool call). **Positive control**: connecting to its own `supervisor:5500` = `CONNECTED` (without it the run is unusable — measured: an empty Service clusterIP yields ECONNREFUSED, which looks like a denial). Everything else is denied: `10.96.0.1:443` TIMEOUT; `1.1.1.1:443` (literal IP, DNS skipped) TIMEOUT; `dns.lookup` = `EAI_AGAIN`. What blocks it is the two NetworkPolicies of §5.4/§3.4 (**L4**), not OpenShell's L7 policy — so "bypass the Agent tool layer" is not a path that exists. |
 | SEC-14 使用未批准的 PVC<br>Using an unapproved PVC | ✅ | 无标签 / 标签值不匹配 → `external resource not admitted by required labels`；标签匹配 → 允许<br>No label / mismatched label value → `external resource not admitted by required labels`; matching label → allowed |
-| SEC-06 / SEC-07 Reviewer 只读 / Developer 可写<br>Reviewer read-only / Developer writable | ❌ **未测 / NOT TESTED** | 依赖 POC-04；`policies/pi-reviewer.yaml` 已写好但没跑<br>Depends on POC-04; `policies/pi-reviewer.yaml` is written but has not been run |
-| SEC-04 / SEC-08 跨租户网络<br>Cross-tenant networking | ⚠️ 未单独测 / NOT TESTED SEPARATELY | Antrea 机制已在 POC-05 证明，但**没有做 Tenant A → Tenant B 的实际连接测试**<br>The Antrea mechanism was proven in POC-05, but **no actual Tenant A → Tenant B connection test was performed** |
-| SEC-12 Supervisor 断链 fail-closed<br>Supervisor fail-closed on lost connection | ❌ 未测 / NOT TESTED | — |
+| SEC-06 / SEC-07 Reviewer 只读 / Developer 可写<br>Reviewer read-only / Developer writable | ✅ 通过(两层分别验证) / PASS (each layer verified separately) | `phases/13-security-matrix.sh`。**两条独立的强制链，errno 不同**: 只关策略(挂载 rw) → `mount_flags=rw,relatime` 但写被拒 **EACCES**(OpenShell 策略层)；只关挂载(策略 rw) → **EROFS** `Read-only file system`(Kubernetes 挂载层)。Reviewer 默认两层都关。<br>**别按固定列号读 mountinfo** —— 字段 4 是挂载根不是选项，实测两种情况都打印 `/`，这一列证据等于没测。正确 awk 见脚本注释。<br>`phases/13-security-matrix.sh`. **Two independent enforcement chains with different errnos**: policy off only (mount rw) → `mount_flags=rw,relatime` yet the write is denied **EACCES** (OpenShell policy layer); mount ro only (policy rw) → **EROFS** `Read-only file system` (Kubernetes mount layer). The Reviewer has both off by default. Do **not** read mountinfo by fixed field number — field 4 is the mount root, not the options; measured output was `/` in both cases, i.e. that column of evidence was dead. Correct awk is in the script comments. |
+| SEC-04 / SEC-08 跨租户网络<br>Cross-tenant networking | ⚠️ **通过，但归因要改**（2026-11-10 POC3 更正：已是平台能力）<br>PASS, attribution changes (POC3 2026-11-10: now a platform capability) | `phases/13-security-matrix.sh` 实测三件事: ① Capsule Tenant 的 `spec.networkPolicies` 是**空的**；② 两个**普通 Pod** 跨租户 `tenant-a/p-a -> tenant-b/p-b:8080` = **REACHED**；③ OpenShell 沙箱跨租户/跨 namespace = TIMEOUT。→ 阻断来自 **OpenShell 自己生成的 NetworkPolicy**，**不是**平台的租户网络隔离。机制是**两条策略相加**(实测 spec): `openshell-sandbox-workloads` 的 `policyTypes=[Ingress,Egress]` 却**只定义 ingress** ⇒ 它自己把 workload 出网全 deny；`os-control-<boundary-pair>` 再放行**唯一**一条 egress = 同一 `boundary-pair` 的 `supervisor:5500`。⚠ 取证时只打印前者的 `.spec.egress` 会得到**空白一列**(它本来就是空的)，必须连后者的 `.spec.egress[0].to` 一起取。"Agent 不能绕过 Supervisor 出网"(POC-05)成立；"租户之间网络隔离"是边界的副作用，换掉 OpenShell 或只跑普通 Pod 就不存在，要补 Capsule networkPolicies 或 Antrea ClusterNetworkPolicy。<br>两个坑叠在同一条测试上，都会给出**假的"隔离生效"**: 目标 Pod 必须**在被测端口真有监听**；busybox 的 `nc -l` **只服务一条连接**就退出，所以"先自证在监听"会自己把 listener 用掉。正确写法是 `while true; do nc -l -p 8080 </dev/null; done`，自证只打 127.0.0.1 且放在跨租户测试**之后**。<br>Three measured facts: (1) Capsule Tenant `spec.networkPolicies` is **empty**; (2) two **plain Pods** across tenants `tenant-a/p-a -> tenant-b/p-b:8080` = **REACHED**; (3) OpenShell sandboxes across tenants/namespaces = TIMEOUT. So the block comes from **OpenShell's own generated NetworkPolicies**, **not** from platform tenant isolation. The mechanism is **two policies composed** (specs measured): `openshell-sandbox-workloads` declares `policyTypes=[Ingress,Egress]` but defines **only ingress** ⇒ all workload egress is denied by that policy alone; `os-control-<boundary-pair>` then allows the **single** egress = `supervisor:5500` of the same `boundary-pair`. ⚠ Collecting only the first policy's `.spec.egress` yields a **blank column** (it is legitimately empty); read the second one's `.spec.egress[0].to` as well. "The Agent cannot bypass the Supervisor to reach the network" (POC-05) holds; "tenant-to-tenant network isolation" is a side effect of the boundary and disappears if OpenShell is swapped out or plain Pods run — you'd need Capsule networkPolicies or an Antrea ClusterNetworkPolicy. Two traps stack on the same test and both yield a **false "isolation works"**: the target Pod must **actually listen on the tested port**, and busybox's `nc -l` **serves one connection** then exits, so self-verifying the listener consumes it. Correct form: `while true; do nc -l -p 8080 </dev/null; done`, with the self-check on 127.0.0.1 only and **after** the cross-tenant test. |
+| SEC-12 Supervisor 断链 fail-closed<br>Supervisor fail-closed on lost connection | ✅ 已实测(控制面/数据面分开) / measured (control vs data plane) | 断链的正确做法是把 **StatefulSet** `os-a-openshell` 缩到 0(它是 StatefulSet，`scale deployment/` 会 NotFound)。**数据面不 fail-closed**: 沙箱内每 20s 调一次模型的循环，在停机窗口里**仍持续拿到回复**(两次实测 3→5→9 / 3→4→8，时间戳都在窗口内)；该 supervisor 的「OCSF HTTP:POST」计数同期上涨(一次 6→14)。**控制面 fail-closed**: `sandbox create` 失败，`sandboxes.agents.x-k8s.io` 里**连对象都没有**(0)。supervisor **察觉**断链(自己日志 `OCSF NET:FAIL [LOW] os-a-openshell.tenant-a-gateway.svc.cluster.local:8080`，恢复后 `NET:OPEN`)，但仍继续代理**已批准的** L7 流量 —— 与 `openshell-sandbox-supervisors` 那条 netpol 一致(`policyTypes=[Egress]`、`egress=[{}]` = 全开)。<br>⚠ 测法比结论更容易错(四个坑，脚本注释里都有): ① 不要用 NetworkPolicy 当"断链"(那掐的是 supervisor 出网)；② `openshell sandbox exec` **自己走 Gateway**，断链必然 `connect error: transport error`，用它测数据面会得到假结论；③ `kubectl exec` 的环境**不完整**(没有注入的 `OPENAI_API_KEY` 占位符与 supervisor CA → pi 报 `apiKey: must not have fewer than 1 characters`，那是"没有模型"不是"网络不通")；④ Sandbox CR 的真名是 `<workspace>--<name>`，按 `<name>` 查会 NotFound；⑤ 把 Gateway 缩到 0 会把它上面的 `port-forward` 一起弄断，所以**恢复之后**脚本收尾的 `sandbox delete` 只剩一条 transport error（stderr 丢了就完全看不见），实测 `sec12-loop` 因此没删掉、白占 2 个 Service 配额，下一轮 create 撞配额。<br>The correct disconnect is scaling the **StatefulSet** `os-a-openshell` to 0 (it is a StatefulSet; `scale deployment/` returns NotFound). **The data plane does not fail closed**: a loop inside the sandbox calling the model every 20 s keeps getting answers through the outage (3→5→9 and 3→4→8 in two runs, timestamps inside the window); that supervisor's `OCSF HTTP:POST` count rises in the same window (6→14 in one run). **The control plane does fail closed**: `sandbox create` fails and there is not even an object in `sandboxes.agents.x-k8s.io` (0). The supervisor **notices** the break (`OCSF NET:FAIL … os-a-openshell…:8080`, back to `NET:OPEN` when restored) and still proxies **approved** L7 traffic — consistent with the `openshell-sandbox-supervisors` policy (`policyTypes=[Egress]`, `egress=[{}]` = unrestricted).<br>⚠ The method is easier to get wrong than the conclusion (four traps, all in the script comments): (1) do not use a NetworkPolicy as "the disconnect" — that cuts the supervisor's egress; (2) `openshell sandbox exec` **goes through the Gateway itself**, so during the outage it always returns `connect error: transport error` — measuring the data plane that way gives a false conclusion; (3) `kubectl exec` has an **incomplete** environment (no injected `OPENAI_API_KEY` placeholder, no supervisor CA → pi reports `apiKey: must not have fewer than 1 characters`, which is "no model", not "no network"); (4) the real Sandbox CR name is `<workspace>--<name>`, so looking it up by `<name>` returns NotFound; (5) scaling the Gateway to 0 also tears down the `port-forward` tunnelled through it, so the `sandbox delete` the script runs **after** the restore only yields a transport error (invisible if stderr is dropped) — measured: `sec12-loop` survived that way, held 2 Service quota units, and the next round's `create` hit the quota. |
 
 ---
 
@@ -302,22 +303,42 @@ been recalculated from the measurements, with the quota error above kept in a co
 
 Ordered from "must fix" to "should fix":
 
-1. **共享 Workspace 的读写分权(POC-04/SEC-06/SEC-07)未验证。** 这是模式的核心主张，
-   必须补：Developer RW + 两个 Reviewer RO 挂同一个 PVC，并在容器里真的 `touch` 失败。
-   `policies/pi-reviewer.yaml` 与只读 mount 的配置都已备好。
-   **Read/write separation on the shared Workspace (POC-04/SEC-06/SEC-07) is unverified.** This is the pattern's central
-   claim and must be completed: Developer RW plus two Reviewers RO on the same PVC, with a real `touch` failing inside the
-   container. `policies/pi-reviewer.yaml` and the read-only mount configuration are already prepared.
-2. **跨源关联(POC-11)未证明。** 需要一条 trace 能同时定位租户/Gateway/Sandbox/进程/目标。
-   先确认 relay 补不补 `openshell.sandbox.id`；如果不补，就要在 Collector 侧按
-   Pod UID + 时间关联(POC2 §7.3 已经给了正确的做法：不要伪造 trace parent)。
-   **Cross-source correlation (POC-11) is unproven.** A single trace must locate tenant/Gateway/Sandbox/process/destination
-   at once. First determine whether the relay adds `openshell.sandbox.id`; if not, correlate on the Collector side by Pod
-   UID + time (POC2 §7.3 already gives the correct approach: do not fabricate a trace parent).
-3. **多 Agent 协作(POC-10)未做。**
-   **Multi-Agent collaboration (POC-10) was not done.**
-4. **OCSF 走 OTLP 未验证**——现在只有 JSONL 文件和日志里的人类可读行。
-   **OCSF over OTLP is unverified** — today there are only JSONL files and human-readable lines in logs.
+1. **租户之间的网络隔离不是平台能力**(见 §2 SEC-04/08)。现在"跨租户不通"是 OpenShell
+   执行边界的副作用。要在平台层成立，必须补 Capsule `spec.networkPolicies` 或 Antrea
+   ClusterNetworkPolicy(按 ns label)。POC2 §9 与 §11 里这是两件事，要分开写。
+   ⚠️ **2026-11-10 更正(POC3)**: 两个 Tenant 已补上 `spec.networkPolicies`，同一条测试现在
+   跨租户普通 Pod = `BLOCKED`、同租户正对照 = `REACHED`(用例 N-01..N-05)；可加性仍在
+   (租户自建策略能放宽)。详见 `README.md` §5.4 与 §12。
+   **Tenant-to-tenant network isolation is not a platform capability** (§2 SEC-04/08). Today "cross-tenant fails" is a
+   side effect of the OpenShell execution boundary. For it to hold at the platform layer you must add Capsule
+   `spec.networkPolicies` or an Antrea ClusterNetworkPolicy (by namespace label). POC2 §9 and §11 mix two different
+   things; write them apart.
+   ⚠️ **2026-11-10 更正 / corrected in POC3**: 两个 Tenant 已补上 `spec.networkPolicies`，同一条测试现在
+   跨租户普通 Pod = `BLOCKED`、同租户正对照 = `REACHED`（用例 N-01..N-05）；NetworkPolicy 可加性仍在
+   （租户自建策略能放宽）。详见 `README.md` §5.4 与 §12。
+   Both tenants now carry `spec.networkPolicies`; the same test now yields `BLOCKED` cross-tenant and `REACHED` for
+   the same-tenant positive control (cases N-01..N-05). Additivity remains (a tenant can widen it). See `README.md`
+   §5.4 and §12.
+2. **读写分权要两层都留**(§2 SEC-06/07)。OpenShell 策略(EACCES)与 Kubernetes 挂载(EROFS)是
+   **两条独立**的强制链。只依赖一条，另一条配置漂移时就失效；报告里也要按 errno 说清是哪层。
+   **Keep both layers for read/write separation** (§2 SEC-06/07). The OpenShell policy (EACCES) and the Kubernetes mount
+   (EROFS) are **two independent** enforcement chains. Relying on one alone fails the moment the other drifts, and the
+   report should name the layer by errno.
+3. **每个沙箱占 2 个 Service、requests≈1.15Gi，`Completed` 仍占配额。** 最先撞到的配额是
+   `count/services` 不是 `count/pods`(本轮实测 10/12 时新建沙箱只报错、不给原因)。配额要按
+   沙箱数反算，并且清理必须是真 `sandbox delete`。
+   **Each sandbox takes 2 Services and ~1.15Gi of requests, and a `Completed` one still counts.** The first quota you hit
+   is `count/services`, not `count/pods` (at 10/12 a new sandbox just errors, with no reason given). Size quotas from
+   the sandbox count, and cleanup has to be a real `sandbox delete`.
+4. **OCSF 走 OTLP 已验证，但 chart 没暴露它**(§2 POC-09)。v0.1.7 的 values 只有 `ocsf_log`(JSONL)，
+   OCSF over OTLP 要**直接写 gateway.toml**。生产上这条要么等上游 values，要么在交付清单里写明"手工 TOML +
+   升级时要重新断言"(哨兵指标: `openshell_ocsf_otlp_exported_total`)。另外 OCSF 走 Collector 的 **logs**
+   pipeline，日志管道的保留/采样策略要单独定。
+   **OCSF over OTLP is verified, but the chart does not expose it** (§2 POC-09). The v0.1.7 values only offer
+   `ocsf_log` (JSONL); OCSF over OTLP requires **writing gateway.toml directly**. In production either wait for upstream
+   values or put "manual TOML, re-assert after upgrades" in the delivery checklist (sentinel metric:
+   `openshell_ocsf_otlp_exported_total`). Also note OCSF flows through the Collector's **logs** pipeline, so log-pipeline
+   retention and sampling need their own policy.
 5. **观测后端的持久化与证据留存。** Jaeger all-in-one 内存存储在两轮里各丢过一次证据；
    本轮已改成双出口(集群内 Jaeger 供脚本断言、宿主 Tempo/Grafana 供演示)，但生产要换成
    带存储的后端，并且给 trace 设保留期。
@@ -362,12 +383,24 @@ The complete conditions for external access (`apiServerAddress: 0.0.0.0` + `apiS
 in `poc/kind/README-external-access.md`: **two** necessary conditions — the certificate SAN must include the host IP, and
 NodePorts must be published explicitly with `extraPortMappings`.
 
-### 本轮还没跑的部分 / Not yet run in this round
+### 已经补跑的部分 / Now completed
 
-`phases/11-pi-scenario.sh`(§10 业务流程: git clone → 修改 → go test → 两个 Reviewer 并行
-只读)与 `phases/13-security-matrix.sh`(SEC-04/06/07/08/12)尚未编写。POC-04/10/11 的
-结论因此是 ❌，不是 ⚠️。
+`phases/11-pi-scenario.sh`(§10 业务流程: git clone → 修改 → go test → 两个 Reviewer 并行只读)
+与 `phases/13-security-matrix.sh`(SEC-04/06/07/08/12/**13**)**都已编写并跑过**，POC-04/10/11 与
+SEC-04/06/07/08 的结论见上面 §2 的表。**13 号脚本现在能独立跑**(它会自己建 Reviewer，
+因为 11 号脚本结束时会把它们删掉 —— 那是它 §7 的断言本身)。
+
+SEC-12 的**数据面已经实测**(先前那句"没有再现"是**测法错了**，不是测不到 —— 见 §2 该行的几个坑)。
+结论: 数据面**不** fail-closed、控制面**是**，两条都在 13 号脚本里可复现。
+SEC-13 是本轮**新补**的一条(先前两份结论文档都漏了它，而 POC2 §11 有定义) —— 见 §2 该行与 13 号脚本的 SEC-13 一节。
 
 `phases/11-pi-scenario.sh` (§10 business flow: git clone → modify → go test → two Reviewers reading in parallel,
-read-only) and `phases/13-security-matrix.sh` (SEC-04/06/07/08/12) are not yet written. The verdicts for POC-04/10/11
-are therefore ❌, not ⚠️.
+read-only) and `phases/13-security-matrix.sh` (SEC-04/06/07/08/12/**13**) **have both been written and run**; their verdicts
+are in the tables above. **Script 13 now runs standalone** — it creates its own Reviewers, because script 11 deletes
+them at the end (that deletion is its own §7 assertion).
+
+The SEC-12 **data plane is now measured**: the earlier "not reproducible" was a wrong method, not something
+unmeasurable (see the traps listed in that §2 row). The result — the data plane does **not** fail closed, the control
+plane does — is reproducible in script 13.
+SEC-13 is **newly added** this round: both earlier conclusion documents omitted it even though POC2 §11 defines it. See
+that §2 row and the SEC-13 section of script 13.

@@ -1,0 +1,121 @@
+# POC3 §三 —— **一台**走 OIDC 认证的 Gateway，里面两个 Workspace(ws-tenant-a / ws-tenant-b)。
+# 用法: 由 60-gateway-oidc.sh 填 __ISSUER__ 后 helm -f 使用(不要直接 helm -f 这个文件)。
+#
+# 为什么和 POC2 不同(POC2 是"每租户一台 Gateway"):
+#   POC3 要证的是 **Workspace 本身是隔离边界**。若照 POC2 一租户一台 Gateway，
+#   "看不到对方租户的资源"就可能是**换了 Gateway/换了 namespace**的结果，而不是 Workspace 的作用。
+#   把两个租户的资源放进同一台 Gateway、同一个 runtime namespace，
+#   剩下的唯一变量就是 "OIDC subject + Workspace 成员资格" —— 这才是 §三用例在测的东西。
+#   (对照用例 W-11 会临时把 alice 加进 ws-tenant-b，看边界是否随成员资格移动。)
+#
+# ⚠ 这台 Gateway 是**平台自有**的，不属于任何 Capsule Tenant: 它的 ns 既不带
+#   capsule.clastix.io/tenant，也不带 platform.example.com/tenant。
+#   实测(2026-11-10) Gatekeeper 的两个约束实例只匹配 platform.example.com/tenant=<租户> 的 ns，
+#   所以这里不受它们影响。这不是遗漏: K8s 侧隔离与 OpenShell 侧隔离必须**可分别归因**，
+#   否则 §四的"两侧一致"就分不清是谁保证了它。
+#
+# ── 下面每一条都对着 chart 0.1.7 的文件本身核对过。这一版 values 是从**四次真实启动失败**
+#    里改出来的，每条 ⚠ 后面是当时的报错原文(不是推测):
+#    1) OIDC 的键位置      → 见 server.oidc
+#    2) gatewayConfig 段名   → 见 server.ocsfLog
+#    3) OTLP 端点缺失        → 见 server.otlp
+#    4) mTLS 关掉后 clientCa 要清空 → 见 server.tls
+
+workspaceResources:
+  enabled: false
+
+server:
+  logLevel: info
+
+  oidc:
+    # ── ⚠⚠ 键的位置: OIDC 的父键是 **server.oidc**，**不是** server.auth.oidc。
+    #   依据(不是猜): templates/_toml.tpl:154 `{{- $legacyOidc := get $legacyServer "oidc" -}}`
+    #   以及 :156 `{{- if or (hasKey $config "openshell.gateway.oidc") (get $legacyOidc "issuer") -}}`
+    #   写成 server.auth.oidc 的后果是这条链里最难查的一种失效:
+    #     helm 渲染成功 → Gateway 正常启动 → 但 gateway.toml 里**没有** [openshell.gateway.oidc] 段
+    #     → 服务端**根本不校验 JWT**。CLI 带不带 token 都一样，用例全部"失败"，
+    #     看起来像"OpenShell 的 Workspace 隔离没生效"，实际是**配置键写错、且没有任何地方报错**。
+    #   14 号脚本因此断言的是**跑着的 gateway.toml**，不是这个 values 文件。
+    #
+    # issuer 由脚本从 identity/kc-config 读出来填入，这里不硬编码 ——
+    # issuer 有三处消费者(Keycloak 的 KC_HOSTNAME / apiserver 的 --oidc-issuer-url / 这里)，
+    # 只要有一处是硬编码，就会出现"某侧 issuer 不一致"这种难查故障。
+    issuer: "__ISSUER__"
+    # chart 默认就是 "openshell-cli"，注释写明
+    #   "This should match the server's --oidc-audience, NOT the CLI client ID."
+    # 我们让三处都等于 openshell-cli(Keycloak 侧由 audience mapper 把 aud 写进 token)。
+    # 写出来而不是依赖默认值: "默认值生效"和"没配"在排障时看起来一模一样。
+    audience: "openshell-cli"
+    # ⚠ 故意填**顶层** "groups"，不填 chart 注释建议的 "realm_access.roles"。
+    #   实测: kube-apiserver v1.37 的 --oidc-groups-claim **只能读顶层 claim** ——
+    #   配成 realm_access.roles 时 token 里明明有，`kubectl auth whoami` 的 Groups 却只有
+    #   system:authenticated，**不报错、不告警**，RBAC 全部落到 no。
+    #   而这里的 rolesClaim 是 dot-separated path(**可以**读嵌套)。两侧读**同一个** claim
+    #   才是 §四要证的"一致"; 各用一个 claim 名会把一致性变成配置巧合。
+    rolesClaim: "groups"
+    adminRole: "os-admin"      # 与 LDAP 里 cn=os-admin 同名(同一份目录数据，不是两边各建一份)
+    userRole: "os-user"        # 同上: cn=os-user
+    scopesClaim: ""            # POC 不使用 Scope；§三的用例不依赖它
+    caConfigMapName: "oidc-issuer-ca"   # issuer 用自建 CA，不给就 JWKS 拉取 TLS 失败
+    jwksTtl: 600                        # 比默认 3600 短: POC 里会重建 Keycloak，避免旧 JWKS 长期生效
+
+  auth:
+    # 这个键**确实在** server.auth 下(values.yaml:608)—— 与上面的 oidc 不同层，别搞混。
+    # ⚠ 不要开成 true: chart 注释写的是 "UNSAFE … local developer"。
+    #   开了之后所有用例都会"成功"，隔离测试全部失去意义 —— 这是 §四"隔离假象"的第一条。
+    allowUnauthenticatedUsers: false
+
+  tls:
+    # enableMtls=false 时 chart 注释: "runs HTTPS-only without requiring client
+    # certificates (use OIDC for auth instead)"。
+    # ⚠ 代价必须写下来: POC2 的 CLI 通道靠 mTLS 客户端证书；这台换成 OIDC 之后，
+    #   **同一个 CLI 对它走的是另一套认证**，所以单独部署、不动 POC2 的两台。
+    enableMtls: false
+    clientCaSecretName: ""     # 必须显式清空，否则仍会要求客户端 CA
+    # clientTlsSecretName 保持默认: shared 模式下 runtime ns 里仍需这份
+    # (poc/phases/08-gateway.sh 里那条 supervisor 挂载失败实测)。
+
+  drivers:
+    kubernetes:
+      workspaceMode: shared
+      allowDriverConfig: true
+      # 与 POC2 同样的授权标签机制，但 workspace 标签按**实际 workspace 名**注入 ——
+      # 这样"K8s 侧的标签"与"OpenShell 侧的 workspace"是同一件事的两种写法，可交叉验证。
+      resourceAdmission:
+        enabled: true
+        requiredLabels:
+          openshell.ai/sandbox-attachable: "true"
+          example.com/workspace: "${workspace}"
+
+  otlp:
+    # ⚠ 第三处启动失败(修掉下面的 ocsf 段名之后紧接着报的):
+    #   line 59, column 20: otlp.ocsf needs an endpoint, or otlp.endpoint to default to
+    #   在 gatewayConfig 里开 otlp.ocsf / otlp.agent 时**必须**有端点，而端点归
+    #   server.otlp.endpoint 管(POC2 的 values 里有这行，我抄漏了)。
+    #   这条错误的价值: 它是"配置不完整"而不是"策略不生效" —— 进程直接不起并指名道姓。
+    #   §五"失败可观测"要靠这个区分，不能把两者混成"隔离没生效"。
+    endpoint: http://otel-collector.observability.svc:4317
+
+  ocsfLog:
+    # ⚠ 第二处启动失败。我最初写的是
+    #     gatewayConfig: {"openshell.gateway.ocsf": {enabled: true}}
+    #   渲染成功、helm install 成功、Pod 起来**后**才失败:
+    #     line 44, column 20: unknown field `ocsf`, expected one of ... `ocsf_log` ...
+    #   即 **gatewayConfig 是原样透传进 TOML 的，helm 不校验段名**；服务端 schema 才是权威。
+    #   改用 chart 暴露的 server.ocsfLog(它会把 enabled 翻译成正确的 ocsf_log 段)。
+    #   JSONL 落在节点上，是做"拒绝可取证"用的附件来源。
+    enabled: true
+    path: /var/openshell/poc3-gateway-ocsf.jsonl
+
+resources:
+  requests: {cpu: 100m, memory: 256Mi}
+  limits: {cpu: 500m, memory: 768Mi}
+
+gatewayConfig:
+  # POC2 已验证的两条(见 openshell2/gateway-values.yaml)，这里沿用:
+  # OCSF 事件同时进 JSONL(节点上的持久证据)和 OTLP(观测平台)。
+  # POC3 需要它做 §五的"失败可观测": 每一次拒绝都要留下可查的记录。
+  "openshell.gateway.otlp.agent":
+    enabled: true
+  "openshell.gateway.otlp.ocsf":
+    enabled: true

@@ -1,0 +1,14 @@
+{
+  "realm": "aisanbox",
+  "enabled": true,
+  "displayName": "aisanbox POC3",
+  "ssoSessionIdleTimeout": 900,
+  "accessTokenLifespan": 300,
+  "registrationAllowed": false,
+  "eventsEnabled": true,
+  "eventsListeners": [
+    "jboss-logging"
+  ],
+  "adminEventsEnabled": true,
+  "adminEventsDetailsEnabled": true
+}
