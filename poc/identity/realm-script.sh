@@ -39,11 +39,20 @@ create_or_keep() {
   echo "     id=$out"
 }
 
-# find_id <endpoint> <query> <字段名> <期望值> —— 已存在时取 id(pretty 输出 + grep)
+# find_id <endpoint> <field=value> —— 已存在时取 id。
+# ⚠ 2026-11-11 实测坑: `get client-scopes -q name=poc3-claims` 在这版 kcadm 上**不过滤**
+#   返回整个列表，`grep -m1 '"id"'` 于是取到列表第一个对象(saml_organization)的 id。
+#   后果很隐蔽: mapper 建到了**别的 scope** 上、token 里 aud/groups/tenant 全没了，
+#   而脚本每一行都打印成功。所以这里不信服务端过滤，改为在本地按字段值找对象。
 find_id() {
-  $K get "$1" -r $REALM -q "$2" 2>/dev/null | grep -m1 '"id"' | sed 's/.*"id" : "//;s/".*//'
+  local fld=${2%%=*} val=${2#*=} out ln
+  out=$($K get "$1" -r $REALM 2>/dev/null)
+  ln=$(echo "$out" | grep -n "\"$fld\" : \"$val\"" | head -1 | cut -d: -f1)
+  [ -z "$ln" ] && return 0
+  # 在目标字段**之前**找最近的 id —— 每个对象的 id 都排在其它字段前面。
+  # ⚠ 不能用 awk: 26.4 镜像里没有 awk/jq/python/curl(实测)，只有 shell + sed/grep。
+  echo "$out" | head -n "$ln" | grep '"id" : ' | tail -1 | sed 's/.*"id" : "//;s/".*//'
 }
-
 echo "=== 1) realm ==="
 # ⚠ 实测坑: `delete realms/x` 是**异步级联**的 —— 命令返回后，CLIENT/CLIENT_SCOPE 等行还在删。
 #   如果紧接着重建同名 realm，会撞唯一索引(HH 23505: UK_CLI_SCOPE_INDEX_7 / UK_B71...),
@@ -180,8 +189,12 @@ grep -n '"name" : "poc3-' /tmp/mappers.json | sed 's/:.*"name" : "//;s/".*//' | 
   fi
 done
 
-$K create clients/$CID/default-client-scopes -r $REALM -s id=$SID >/dev/null 2>&1 \
-  && echo "     已挂为 default scope" || echo "     (default scope 已挂过)"
+# ⚠ 2026-11-11 实测坑: Admin API 挂 default scope 是
+#   `PUT /clients/{id}/default-client-scopes/{scopeId}`，而 kcadm 的 `create` 发的是
+#   POST `/clients/{id}/default-client-scopes` —— 这一版返回 404 Resource not found，
+#   原来的写法却把失败当成"已挂过"打印掉。改用 update(=PUT)，它是幂等的。
+$K update clients/$CID/default-client-scopes/$SID -r $REALM -n >/dev/null 2>&1 \
+  && echo "     已挂为 default scope" || echo "     !! 挂 default scope 失败"
 
 echo "=== 4) LDAP 联邦 + 两条映射(用户/组/租户没有一条是手工建的) ==="
 # ⚠ 两条实测坑:

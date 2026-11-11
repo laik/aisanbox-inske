@@ -58,7 +58,8 @@ that "how it was measured" stops depending on memory.
 | ⚠️ Partial | Tetragon **enforcement**: lsm-hook policies fail to load on this host (no `bpf` in the LSM list); kprobe-based work and the `security_socket_connect` override work fine |
 | ✅ Works (POC3, round 3) | **One permission system governs both K8s and OpenShell**: LDAP → Keycloak → one OIDC JWT → apiserver (OIDC + RBAC, per tenant namespace) and one OIDC Gateway (two Workspaces). Identity is the directory `entryUUID`; both sides read the same `groups` claim (§12) |
 | ✅ Works (POC3) | **Platform-level multi-tenant network isolation**: Capsule `networkPolicies` now populated in all 4 tenant namespaces; cross-tenant ordinary Pod `BLOCKED`, same-tenant positive control `REACHED` (§5.4 corrected). ⚠️ NetworkPolicy stays additive (a tenant can widen it, §12.2 N-04) |
-| ❌ Not verified | Observability backend persistence and retention (Jaeger is in-memory); Gateway multi-replica / external PostgreSQL; automatic propagation of directory changes into tokens (Keycloak 26.4 has no working LDAP sync endpoint, §12.4/§12.6-h) |
+| ✅ Works (POC4, round 4) | **Gateway as a Deployment on external PostgreSQL**: two independent Helm releases (p4a/p4b) share one PostgreSQL and its control-plane state; two replicas of one release are HA; sandbox visibility comes from the shared runtime namespace, not PostgreSQL (§13) |
+| ❌ Not verified | Observability backend persistence and retention (Jaeger is in-memory); automatic propagation of directory changes into tokens (Keycloak 26.4 has no working LDAP sync endpoint, §12.4/§12.6-h); **concurrent writes** and the **KEK decrypt-failure path** when several gateways share one database (§13.3) |
 
 **Note:** round 1's conclusions document (operator mode, a Mac with two kind clusters) was deleted and survives only in
 git history. Its conclusions **do not transfer** to shared mode. Round 1's raw evidence remains in
@@ -697,6 +698,7 @@ poc/
 ├── gatekeeper/    constraint templates and constraint instances
 ├── openshell2/    Gateway values (shared mode, with the measured correction about otlp.ocsf)
 ├── openshell3/    POC3 OIDC Gateway (values / NodePort / CLI device-flow login library)
+├── openshell4/    POC4 Deployment + external PostgreSQL (two releases share one DB / HA / matrix)
 ├── identity/      POC3 identity chain: LDAP entries and seed job, Keycloak realm script and claim mappers,
 │                  apiserver OIDC patch, per-namespace RBAC, self-signed issuer CA
 ├── providers/     Provider profiles (model egress, credential-free GitHub egress)
@@ -765,8 +767,11 @@ Ordered from "must fix" to "should fix":
   `identity` namespace (OpenLDAP + Keycloak 26.4), apiserver OIDC flags, per-namespace RBAC, a third OIDC Gateway (two
   Workspaces), and Capsule `networkPolicies` on both tenants. Verdicts in **§12**, script
   `phases/14-identity-federation.sh`. **It does not conflict with round 2: POC2's two Gateways are untouched.**
+- **Round 4 (2026-11-11, POC4)**: the Gateway moves from StatefulSet + SQLite to Deployment + external
+  PostgreSQL; two independent releases (p4a/p4b) share one PostgreSQL, and two replicas of one release are
+  HA. Scripts in `openshell4/`, verdicts in **§13**. POC2/POC3 Gateways are untouched.
 - **Currently valid conclusions**: round 2's component verdicts plus round 3's identity/permission and
-  network-isolation corrections.
+  network-isolation corrections plus **round 4's storage shape (§13)**.
 
 ## 12. POC3 (round 3, 2026-11-10): one permission system for Kubernetes and OpenShell
 
@@ -788,6 +793,12 @@ Ordered from "must fix" to "should fix":
 
 ### 12.1 I. Identity and claim design (configuration)
 
+> ⚠ **The LDAP directory was reseeded on 2026-11-11**: every `entryUUID` changed (alice is now
+> `674f092a-71c7-1041-817c-7f0afac63416`). The `3affaeaa-… / 3b008514-…` values in this section belong to the
+> **11-10 run** and are that run's verbatim evidence; **on replay, read them from a fresh token rather than
+> copying constants** (§12.7). The 11-11 replay also fixed two bugs in `realm-script.sh` (`find_id` and scope
+> attachment), so replay now reliably emits `aud/groups/tenant`.
+
 **LDAP is the only source of truth** (`poc/identity/ldif/tenant-users.ldif`): the tenant identifier is
 `departmentNumber`; roles are `groupOfNames` memberships under `ou=groups`.
 
@@ -804,7 +815,7 @@ Ordered from "must fix" to "should fix":
 
 | File | Mapper | Source | Claim | Measured example |
 |---|---|---|---|---|
-| `24-claim-sub-from-ldap.json` | `oidc-usermodel-attribute-mapper` | user attribute `LDAP_ID` | **`sub`** | alice `3affaeaa-70f6-1041-996a-41648389b70a` |
+| `24-claim-sub-from-ldap.json` | `oidc-usermodel-attribute-mapper` | user attribute `LDAP_ID` | **`sub`** | alice `3affaeaa-70f6-1041-996a-41648389b70a` (11-10 run; changed by the 11-11 reseed) |
 | `21-claim-tenant.json` | `oidc-usermodel-attribute-mapper` | user attribute `tenant` ← LDAP `departmentNumber` (mapper `31-ldap-attr-tenant.json`) | **`tenant`** | `tenant-a` |
 | `22-claim-roles.json` | `oidc-usermodel-realm-role-mapper` (`multivalued`) | realm roles loaded from `ou=groups` (`32-ldap-roles-from-dir.json`, `LDAP_ONLY`) | **`groups`** (flat array) | `["os-user","tenant-a-owners","tenant-a-users"]` |
 | `23-claim-audience.json` | `oidc-audience-mapper` | `included.client.audience=openshell-cli` | `aud` | `openshell-cli` |
@@ -850,7 +861,7 @@ Workspaces: `ws-tenant-a` (tadmin admin, alice user), `ws-tenant-b` (tadmin admi
 
 | Case | Actor | Target | Command | Expected | Fails if | Measured |
 |---|---|---|---|---|---|---|
-| K-01/K-02 | alice/bob | token | decode `sub` | equals directory `entryUUID` (`3affaeaa-…` / `3b008514-…`) | local Keycloak id, empty, or different | ✅ |
+| K-01/K-02 | alice/bob | token | decode `sub` | equals directory `entryUUID` (`3affaeaa-…` / `3b008514-…`; values from the 11-10 run — the LDAP reseed on 11-11 changed them, so read `sub` from a fresh token) | local Keycloak id, empty, or different | ✅ |
 | K-03 | alice | token | read `groups` | contains `os-user`, `tenant-a-users`, `tenant-a-owners` | missing one; order-sensitive grep | ✅ |
 | K-03b | tadmin | token | read `groups` | contains `os-admin` | absent | ✅ |
 | K-03c | bob | token | read `groups` | contains **no** `tenant-a-*` group | any | ✅ |
@@ -963,3 +974,325 @@ lets the client certificate override the token — build a token-only kubeconfig
 `Unauthorized`, which is expiry, not a directory change that failed to apply — always mint a fresh token; (4)
 `kubectl exec` without `-i` silently drops stdin (0-byte ldif, exit 0) — read the directory back to confirm; (5) the
 CLI's WARN is on stdout and its `Error:` block may miss a pipe — assert on a captured file.
+
+## 13. POC4 (round 4, 2026-11-11): a Deployment Gateway on PostgreSQL, and several gateways sharing one database
+
+> Scripts: [`poc/openshell4/80-gateway-pg.sh`](poc/openshell4/80-gateway-pg.sh) (installs PostgreSQL and two Helm
+> releases), [`81-shared-db-verify.sh`](poc/openshell4/81-shared-db-verify.sh) (the verification matrix),
+> [`82-cli-login.sh`](poc/openshell4/82-cli-login.sh) (device-flow login).
+> Raw remote output: `/tmp/p4-81f.log`, ending in `PASS=33 FAIL=0`.
+> The identity chain is still POC3's (Keycloak NodePort 31443); only the Gateway's storage changed this round.
+
+### 13.0 Verdict
+
+**Yes, it works.** `workload.kind: deployment` plus `server.externalDbSecret` moves the Gateway's control-plane
+state into an external PostgreSQL. **Two independent Helm releases (p4a / p4b) sharing one PostgreSQL really do
+read the same state**: a workspace / member / provider created on A is immediately readable on B; deleting all of
+p4a's Pods does not lose it; non-member bob is still denied on B. A single release scaled to two replicas also
+works: kill one replica and 10/10 calls succeed, and the replica is recreated.
+
+Three preconditions must hold together, or "shared database" means only that two processes connected to the same
+port:
+
+| Precondition | Why | How this round checked it |
+|---|---|---|
+| Both releases share the **same KEK Secret** | Credentials are AES-256-GCM ciphertext in the database; the KEK defaults to one Secret per release | K-04/K-05 assert the same Secret reference and byte-identical values; **the decrypt-failure path was not measured** (§13.3) |
+| Both releases use the **same OIDC configuration** | Identity comes from the token; a different issuer / audience / role mapping gives the same user different rights on each gateway | both releases render from the same values file (§13.1) |
+| They share a **runtime namespace** (`poc4-runtime` here) | A Sandbox is a Kubernetes object, not a PostgreSQL row; both gateways' Kubernetes drivers list Sandboxes from this namespace | `kubectl -n poc4-runtime get sandboxes`; the `objects` table has **no** sandbox rows |
+
+⚠ The third row is the easiest to misread as "PostgreSQL shares sandbox state". It does **not**: sandbox visibility
+across gateways comes from the shared runtime namespace plus the Kubernetes driver; PostgreSQL shares the
+**control-plane objects** — workspace / member / provider / provider profile. Keep the two kinds of evidence apart.
+
+| Surface | Verdict | Evidence |
+|---|---|---|
+| Shape | ✅ Deployment, not StatefulSet | D-01/D-02; `kubectl get deploy,sts` shows only deployments |
+| Storage entry point | ✅ `OPENSHELL_DB_URL` comes from a Secret; no `--db-url` in the args | D-03..D-06 |
+| PostgreSQL schema | ✅ created automatically at Gateway startup | 7 rows in `_sqlx_migrations`; p4b logs `relation "_sqlx_migrations" already exists, skipping` |
+| Control-plane sharing | ✅ written on A, read on B | S-02/S-03, K-01/K-02/K-03 |
+| Survives restart | ✅ after deleting every p4a Pod, B still reads it; a rebuilt p4a reads it too | S-08..S-10 |
+| Authorization still holds | ✅ non-member bob is denied on B | S-06/S-07 |
+| Chart hard constraints | ✅ negative controls fail with exact errors | S-11..S-14 |
+| Multiple replicas of one release | ✅ 2 replicas; kill one, 10/10 calls succeed, self-heals | S-15..S-18 |
+| Credentials in the shared DB | ✅ the provider row is in PG and both gateways read the same id; KEK config matches | K-01..K-05 (incl. K-02a) |
+| Credential decryption failure | ⚠️ **not measured** (not faked) | §13.3 |
+
+---
+
+### 13.1 Configuration
+
+#### 13.1.1 Chart 0.1.7 hard constraints: the two values must appear together
+
+These are not two independent switches. `workload.kind` and `server.externalDbSecret` are coupled in the chart:
+
+| Configuration | Result (exact helm text) | Case |
+|---|---|---|
+| `workload.kind=statefulset` + `replicaCount=2`, no externalDbSecret | `Error: execution error at (helm-chart/templates/supervisor.yaml:1:4): replicaCount > 1 requires server.externalDbSecret; multiple gateway replicas cannot share the default per-pod SQLite database.` | S-11 |
+| `workload.kind=deployment`, no externalDbSecret | `Error: execution error at (helm-chart/templates/supervisor.yaml:1:4): workload.kind=deployment requires server.externalDbSecret; use workload.kind=statefulset for the default SQLite database.` | S-12 |
+| `workload.kind=deployment` + `server.externalDbSecret=p4-db-uri` | renders `OPENSHELL_DB_URL` (from Secret key `uri`) and does **not** render `--db-url` | S-13/S-14 |
+
+Also, chart 0.1.7 **no longer ships PostgreSQL**: `postgres.enabled` is gone; the platform must provide a database.
+
+#### 13.1.2 PostgreSQL (minimal shape for this POC)
+
+[`poc/openshell4/postgres.yaml`](poc/openshell4/postgres.yaml): the `poc4-db` namespace, a single
+`postgres:16-alpine` replica, a 2Gi PVC (`subPath: pgdata`), `pg_isready` probes, and a `postgres:5432` Service.
+The password lives in the `postgres-credentials` Secret. **This is a POC shape, not a production one** (no HA,
+backup, pooler or TLS).
+
+The connection string goes into a Secret in each Gateway namespace (Secrets cannot be referenced across
+namespaces, so there are two same-named, same-valued `p4-db-uri` Secrets, key `uri`):
+
+```
+postgresql://openshell:poc4pass@postgres.poc4-db.svc.cluster.local:5432/openshell
+```
+
+#### 13.1.3 The two releases differ only in name, namespace and port
+
+| Item | p4a | p4b |
+|---|---|---|
+| Helm release | `p4a` | `p4b` |
+| namespace | `poc4-gw-a` | `poc4-gw-b` |
+| DB Secret | `p4-db-uri` (same value) | `p4-db-uri` (same value) |
+| KEK Secret | `p4-credential-kek` | a copy with the same value |
+| runtime namespace | `poc4-runtime` | the same one |
+| workspace chart | `os-ws-p4a` (SAs `p4a-openshell` / `p4a-openshell-sandbox`) | `os-ws-p4b` (SAs `p4b-...`) |
+| NodePort | 31445 | 31446 |
+| OIDC | same issuer / audience / rolesClaim | same |
+
+The workspace chart is installed twice to give each Gateway its own ServiceAccount and NetworkPolicy;
+`server.sandboxNamespace` points at `poc4-runtime` (shared mode). The Gateway-generated `openshell-client-tls`
+only needs copying once into the shared runtime namespace (the old POC2 trap: without it the supervisor hangs in
+`ContainerCreating`).
+
+#### 13.1.4 The key values
+
+```yaml
+workload:
+  kind: deployment
+
+server:
+  externalDbSecret: "p4-db-uri"      # Secret key: uri (paired with deployment, see 13.1.1)
+  credentialStorage:
+    existingSecret: "p4-credential-kek"   # both gateways must share the value; the default is one per release
+  oidc: { issuer: "__ISSUER__", audience: "openshell-cli", rolesClaim: "groups",
+          adminRole: "os-admin", userRole: "os-user", caConfigMapName: "oidc-ca" }
+  drivers:
+    kubernetes:
+      workspaceMode: shared
+      allowDriverConfig: true
+```
+
+Full file: [`poc/openshell4/gateway-pg-values.yaml`](poc/openshell4/gateway-pg-values.yaml).
+
+---
+
+### 13.2 Measured results (`PASS=33 FAIL=0`)
+
+**This round rebuilt from an empty database first**: deleting the PG Deployment/PVC/Service left
+`information_schema` with **0 tables** (a 7.5 MB empty template); starting the two gateways then made the gateway
+create the schema itself (7 `_sqlx_migrations` rows), with `objects` holding only the default workspace, 2
+`gateway_member` rows and 1 `reconciler_lease`. The full matrix re-run against that empty database still ended
+`PASS=33 FAIL=0`: the state comes entirely from PostgreSQL, not from leftovers of the previous run.
+
+**Shape and storage (D)**: both releases are Deployments; both `OPENSHELL_DB_URL` values reference `p4-db-uri`;
+the container args are only `--config /etc/openshell/gateway.toml` (no `--db-url`). PostgreSQL holds two tables:
+
+```
+_sqlx_migrations    7 rows
+objects             workspace / workspace_member / gateway_member /
+                    provider / provider_profile / credential.gateway-encrypted /
+                    reconciler_lease (serialized payload, keyed by object_type + workspace)
+```
+
+p4a started first and created the schema; p4b logs
+`sqlx::postgres::notice: relation "_sqlx_migrations" already exists, skipping` — the two releases share one
+schema rather than each creating its own. Both log
+`sizing Postgres connection pools max_connections=10 lock_max_connections=4`; but the pools open **lazily**: with
+three gateway Pods online (two p4a replicas + p4b), `pg_stat_activity` held only 11–14 sessions in total (11 in
+this round's D-07) — not the 3×14 ceiling.
+
+**Control-plane sharing (S)**: a workspace created on p4a is immediately visible in p4b's `workspace list`;
+adding alice as a member makes it visible to p4b-alice; a sandbox created on p4a appears in p4b's `sandbox list`.
+Creating the same workspace name on p4b returns `already exists`; non-member bob can neither see nor enter it on
+p4b (the denial text reads `not a member of workspace '...'`).
+
+**Restarts (S-08..S-10)**: deleting **all** of p4a's Pods leaves the workspace and sandbox readable from p4b; a
+rebuilt p4a reads the same state back. The state is not in a per-Pod SQLite file.
+
+**Chart negative controls (S-11..S-14)**: the exact errors are in §13.1.1; the positive render contains
+`OPENSHELL_DB_URL` and no `--db-url`.
+
+**Replicas of one release (S-15..S-18)**: `replicaCount` 1 → 2 succeeds and both replicas are Running; killing one
+leaves 10/10 consecutive `whoami` calls succeeding (the other replica serves them), and the replica count
+returns to 2.
+
+**Credentials (K)**: import a minimal custom provider profile (`id: poc4-kek`, credential `API_KEY`); `provider
+create` on A returns `✓ Created provider p4-kek`. Querying PostgreSQL directly then finds a row in `objects` with
+`object_type='provider'`, `name='p4-kek'` under this run's workspace (K-02) — the credential ciphertext really is in
+PostgreSQL, not locally on A. `provider get` on B returns the **same id**: this round A and B both read
+`b9b12042-8ca8-4bcb-9868-419e17164313` (K-03; a re-run creates a new workspace and therefore a new id — compare
+"the two gateways agree", not a fixed value), with the same `Credential keys: API_KEY`. Both gateways'
+`OPENSHELL_GATEWAY_CREDENTIAL_KEY_ENCRYPTION_KEY` reference `p4-credential-kek`, and the values in the two
+namespaces are byte-identical.
+
+---
+
+### 13.3 How far can several gateways share one PostgreSQL?
+
+Three layers, three different answers:
+
+1. **Several replicas of one release: supported and measured.**
+   The chart requires `externalDbSecret` whenever `replicaCount>1` (it refuses otherwise, see S-11); this round
+   used Deployment + externalDbSecret, ran 2 replicas, and 10/10 calls succeeded after killing one. This is the
+   right way to make the Gateway HA.
+
+2. **Two independent releases sharing one database: technically works, but it is not a chart contract.**
+   p4a and p4b are separate Helm releases, separate namespaces and separate NodePorts, connected to the same
+   database; control-plane objects are shared. The database contains exactly one `reconciler_lease` row; at the end
+   of this round one gateway had logged `acquired reconciler lease` and was still holding it, while the other only
+   logged `reconciler lease coordinator started` — so the gateways' reconcilers use a database lease for mutual
+   exclusion (which one wins depends on start order: after the PG rebuild, p4a took it on the first boot, and one
+   restart cycle later it was p4b). ⚠ Boundary: the old Pods deleted in S-08 took their logs with them, so earlier
+   contention cannot be read back; and whether this fully prevents duplicate reconciliation was not stress-tested.
+   But the chart neither documents nor validates "several releases on one database", so you must arrange:
+   - **the same KEK**, or credentials written by A cannot be decrypted by B (design constraint, see below);
+   - **identical OIDC configuration** (issuer/audience/rolesClaim/role names), or one user has different rights
+     on each gateway;
+   - **identical versions** (one set of sqlx migrations); when upgrading, upgrade one gateway and confirm the
+     migration before touching the other;
+   - **capacity**: each gateway process sizes its pool at 10 normal + 4 lock connections (startup log), so leave
+     headroom in PostgreSQL's `max_connections`; in practice pools open lazily — this round three Pods held 11–14
+     sessions in total (11 in D-07). That is an **observation, not a ceiling**: under load it grows toward 10+4 per process;
+   - **concurrent writes**: `objects` has a `resource_version` column; whether it is used for optimistic locking,
+     and what two gateways updating the same object get back, were **not load-tested** — do not treat this as a
+     strong consistency coordinator.
+
+3. **KEK decrypt failure: not measured this round, so it is not recorded as PASS.**
+   The chart stores credentials as AES-256-GCM ciphertext and defaults the KEK to a per-release Secret — so
+   "sharing a database requires sharing the KEK" is a **design constraint**. Empirically, though: after changing
+   p4b's KEK to a different value and restarting it, `provider get` still succeeded (it reads metadata, not
+   plaintext); and a sandbox created with the minimal custom profile did not produce an observable
+   decrypt-failure surface. This report therefore records K-04/K-05 as **configuration consistency** only, and
+   does not claim to have measured a decrypt failure.
+
+**In one sentence**: pointing several gateways at one PostgreSQL really does share state, but it is "several
+control planes sharing a database", not "a stateless service you can scale freely". KEK, OIDC, version and
+connection count must be managed together.
+
+---
+
+### 13.4 The real cost of moving from SQLite to PostgreSQL
+
+- **There is no migration tool**: the CLI has no `migrate` / `export` subcommand (`openshell --help` lists
+  sandbox / provider / profile / gateway, etc.); the Gateway creates its schema with sqlx at startup but does
+  **not** copy objects out of an old SQLite database.
+- **SQLite data is per-Pod**: the default StatefulSet gives every Pod its own file, and a Deployment no longer
+  mounts it. Existing workspaces / members / providers must be **recreated**; a sandbox is runtime state and is
+  simply recreated.
+- **Change the KEK and old credentials are unreadable**: to keep them, mount the old KEK as a Secret on the new
+  Deployment; a new KEK invalidates every stored credential and they must be re-entered.
+- **A workable migration**: stand up PostgreSQL and the new Gateway (new NodePort), re-declare
+  workspaces/members/providers with the CLI, verify, then move traffic. Do not expect an in-place upgrade to move
+  the data.
+
+---
+
+### 13.5 Manual re-check (NodePort, no port-forward)
+
+```bash
+ssh root@192.168.5.190
+cd /root/poc2
+
+# 0) POC3 identity chain is already up (Keycloak 31443)
+kubectl --context kind-agent-runtime-poc -n identity get cm kc-config
+
+# 1) install PostgreSQL + p4a/p4b (safe to re-run)
+bash openshell4/80-gateway-pg.sh
+
+# 2) CLI device-flow login (once per profile)
+bash openshell4/82-cli-login.sh
+
+# 3) run the matrix; it must end PASS=33 FAIL=0
+bash openshell4/81-shared-db-verify.sh 2>&1 | tee /tmp/p4-81f.log
+
+# 3b) to start over from an empty database (⚠ wipes every workspace/provider/credential, irreversible)
+#     order: stop gateways → delete PG → recreate empty → clean orphan sandboxes → start gateways
+CFG="--context kind-agent-runtime-poc"
+kubectl $CFG -n poc4-gw-a scale deploy/p4a-openshell --replicas=0
+kubectl $CFG -n poc4-gw-b scale deploy/p4b-openshell --replicas=0
+kubectl $CFG delete -f openshell4/postgres.yaml
+kubectl $CFG apply -f openshell4/postgres.yaml
+kubectl $CFG -n poc4-db rollout status deploy/postgres --timeout=180s
+kubectl $CFG -n poc4-runtime delete sandboxes.agents.x-k8s.io --all
+kubectl $CFG -n poc4-gw-a scale deploy/p4a-openshell --replicas=1
+kubectl $CFG -n poc4-gw-b scale deploy/p4b-openshell --replicas=1
+#     after boot the gateway creates the schema: psql -c 'select count(*) from _sqlx_migrations' → 7
+
+# what is actually in PostgreSQL
+P=$(kubectl --context kind-agent-runtime-poc -n poc4-db get pod -l app=postgres -o jsonpath='{.items[0].metadata.name}')
+kubectl --context kind-agent-runtime-poc -n poc4-db exec $P -- \
+  psql -U openshell -d openshell -c "select object_type,count(*) from objects group by 1 order by 1"
+
+# both releases' DB entry point (both must be p4-db-uri; args must have no --db-url)
+kubectl --context kind-agent-runtime-poc -n poc4-gw-a get deploy p4a-openshell \
+  -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="OPENSHELL_DB_URL")].valueFrom.secretKeyRef.name}{"\n"}'
+kubectl --context kind-agent-runtime-poc -n poc4-gw-b get deploy p4b-openshell \
+  -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="OPENSHELL_DB_URL")].valueFrom.secretKeyRef.name}{"\n"}'
+```
+
+**Five ways to misjudge this run (all hit this round):**
+
+1. **A workspace delete is blocked by providers/profiles.** Deleting sandboxes is not enough: while a workspace
+   still holds a provider or provider profile, `workspace delete` returns
+   `still contains resources: provider profile` and the workspace stays `Terminating`; the next
+   `workspace create` gets `already exists`, and every later `profile import` / `sandbox create` returns
+   `FAILED_PRECONDITION`. Clean up in the order **sandbox → provider → profile → workspace**. The script uses a
+   fresh workspace name per run so it cannot mistake last round's state for this round's success.
+2. **Sandboxes are not in PostgreSQL.** Seeing a sandbox from another gateway is the shared runtime namespace,
+   not evidence of database sharing; do not write "PostgreSQL stores the sandboxes".
+3. **The CLI's WARN and its result are on different lines.** Piping through `tr '\n' ' '` and then
+   `grep -v WARN` deletes the result with it and leaves empty evidence; filter per line, or assert on the captured
+   file.
+4. **`profile import` is workspace-scoped.** A profile imported in A's workspace does not appear in another
+   workspace; when `provider create` says `provider profile '...' not found`, check where you imported it.
+5. **Never base64 the KEK Secret value twice.** `jsonpath` already returns base64; recreating the Secret with
+   `--from-literal` encodes the base64 text again and the Gateway rejects it with
+   `key_encryption_key_env value must decode to exactly 32 bytes`. Use `base64 -d`, or patch the `data` field
+   directly.
+
+---
+
+### 13.6 Production deployment (designed and rendered, not executed on the POC cluster)
+
+POC4 answers "can this work"; for production use [`poc/openshell4/production/`](poc/openshell4/production/):
+
+| File | Purpose |
+|---|---|
+| `README.md` | Production runbook: capacity math, upgrade/migration procedure, backup/restore, security, acceptance checklist |
+| `values-gateway-prod.yaml` | 3-replica Deployment, external PG, edge TLS termination + OIDC, resources/anti-affinity |
+| `postgres-cnpg.yaml` | CloudNativePG 3 instances + PgBouncer (session) + S3 backups (managed PG in runbook §3.1) |
+| `deploy-prod.sh` | Idempotent deploy script (preflight → workspace resources → gateway → PDB/monitoring → assertions) |
+| `secrets-external-secrets.yaml` | DB URI / KEK injected from Vault/KMS via External Secrets |
+| `networkpolicy.yaml`, `pdb-gateway.yaml`, `certificate-edge-tls.yaml` | Network isolation, availability, edge certificate |
+| `servicemonitor.yaml`, `prometheusrule.yaml` | Scrape config and alerts (metric names scraped from POC4) |
+
+Key differences from POC4:
+
+- **One release with 3 replicas**, not two independent releases on one database (the latter is not a chart
+  contract — §13.3).
+- External PG must be **TLS + multi-AZ + PITR**: managed PostgreSQL (preferred) or a 3-instance CNPG
+  cluster; PgBouncer must run **session** mode (sqlx uses server-side prepared statements).
+- The edge terminates TLS at Gateway API; the gateway speaks plaintext in-cluster + OIDC (a path the chart
+  explicitly supports), so mTLS client certificates are no longer distributed to every CLI.
+- The KEK is injected from Vault/KMS and **never rotated**; PG backups hold only ciphertext, so a restore
+  drill must restore the KEK Secret as well.
+- Upgrade order: **scale to 1 replica → upgrade image/values → verify `_sqlx_migrations` → scale back to 3**,
+  so replicas never race on DDL.
+
+**Validation boundary**: `values-gateway-prod.yaml` renders cleanly with `helm template`
+(Deployment/3 replicas, `OPENSHELL_DB_URL` from a Secret, no `--db-url` in args, GRPCRoute/Gateway HTTPS,
+OIDC written into the TOML, 10+4 connection pools, metrics on 9090); however managed PG, CNPG,
+cert-manager, External Secrets, NetworkPolicy, backup/restore, concurrent migrations and HPA have
+**not been executed on this POC cluster** — each is listed in `production/README.md` §12.
+These are deployment designs, not verified results.

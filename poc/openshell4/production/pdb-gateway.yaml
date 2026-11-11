@@ -1,0 +1,14 @@
+# Gateway 自身没有 chart 级 PDB（chart 只给 supervisor 提供了 PDB）。
+# 3 副本 + minAvailable 2：节点维护/驱逐时至少保留 2 个可用网关。
+# selector 与 chart 渲染的 Deployment 标签一致；升级 chart 后请复核标签。
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: openshell-gateway
+  namespace: openshell
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: openshell
+      app.kubernetes.io/instance: openshell

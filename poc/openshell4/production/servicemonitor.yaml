@@ -1,0 +1,25 @@
+# Prometheus Operator 抓取 gateway /metrics。
+# 端口名来自 chart 的 Service（metrics，9090）。指标名以 POC4 实抓为准：
+#   openshell_server_readiness_database_healthy
+#   openshell_server_mutation_lock_{wait_seconds,timeouts_total,errors_total,connections_in_use,connections_capacity}
+#   openshell_server_relay_{pending,pending_capacity,rejected_total,expired_total}
+#   openshell_server_supervisor_sessions
+#   openshell_server_grpc_requests_total
+#   openshell_ocsf_log_{dropped_total,writer_errors_total,queue_records,queue_bytes}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: openshell-gateway
+  namespace: openshell
+  labels:
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: openshell
+      app.kubernetes.io/instance: openshell
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s

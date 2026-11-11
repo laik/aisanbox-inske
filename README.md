@@ -52,7 +52,8 @@
 | ⚠️ 部分 | Tetragon **强制**：lsm hook 类策略在这台宿主上加载失败（LSM 无 `bpf`）；kprobe 类与 `security_socket_connect` 的 override 正常 |
 | ✅ 跑通（POC3，第三轮） | **一套权限体系同时管住 K8s 与 OpenShell**：LDAP → Keycloak → 同一个 OIDC JWT → apiserver（OIDC + RBAC，按租户 ns）与一台 OIDC Gateway（两个 Workspace）。身份是目录 `entryUUID`，两侧读同一个 `groups` claim（§12） |
 | ✅ 跑通（POC3 补齐） | **多租户平台级网络隔离**：Capsule `networkPolicies` 已落到两个租户的 4 个 ns，跨租户普通 Pod `BLOCKED`、同租户正对照 `REACHED`（§5.4 已按实测更正）。⚠️ NetworkPolicy 可加性仍在（租户自建策略能放宽，见 §12.2 N-04） |
-| ❌ 未验证 | 观测后端的持久化与保留期（Jaeger 为内存存储）；Gateway 多副本 / 外部 PostgreSQL；目录变更到 token 的**自动**同步（Keycloak 26.4 无可用的 LDAP sync 端点，见 §12.4/§12.6-h） |
+| ✅ 跑通（POC4，第四轮） | **Gateway 改 Deployment + 外部 PostgreSQL**：两个独立 Helm release（p4a/p4b）共用一套 PG，控制面状态互通；同 release 2 副本 HA；sandbox 可见性走共享 runtime ns，不是 PG（§13） |
+| ❌ 未验证 | 观测后端的持久化与保留期（Jaeger 为内存存储）；目录变更到 token 的**自动**同步（Keycloak 26.4 无可用的 LDAP sync 端点，见 §12.4/§12.6-h）；多 Gateway 共库的**并发写**与 **KEK 解密失败路径**（§13.3） |
 
 **注意：** 第一轮的结论文档（operator 模式，Mac + 两个 kind 集群）已删除，只在 git 历史里保留。它的结论**不迁移**到
 shared 模式。第一轮的原始证据仍在 [`poc/docs/FINDINGS.md`](poc/docs/FINDINGS.md)。
@@ -654,6 +655,7 @@ poc/
 ├── gatekeeper/    约束模板与约束实例
 ├── openshell2/    Gateway values（shared 模式，含 otlp.ocsf 的实测更正）
 ├── openshell3/    POC3 的 OIDC Gateway（values / NodePort / CLI device-flow 登录库）
+├── openshell4/    POC4 Deployment + 外部 PostgreSQL（两个 release 共库 / HA / 验证矩阵）
 ├── identity/      POC3 身份链：LDAP 条目与种子 Job、Keycloak realm 脚本与 claim mapper、
 │                  apiserver OIDC 补丁、按租户 ns 的 RBAC、自建 issuer CA
 ├── providers/     Provider profile（模型出口、GitHub 纯出权）
@@ -712,7 +714,10 @@ poc/
   新增 `identity` ns（OpenLDAP + Keycloak 26.4）、apiserver OIDC flags、按租户 ns 的 RBAC、
   第三台 OIDC Gateway（两个 Workspace），并给两个 Capsule Tenant 补上 `networkPolicies`。
   结论见 **§12**，脚本 `phases/14-identity-federation.sh`。**这一轮不与第二轮冲突：POC2 的两台 Gateway 原样保留。**
-- **当前有效结论**：第二轮的组件结论 + 第三轮的身份/权限与网络隔离更正。
+- **第四轮（2026-11-11，POC4）**：Gateway 从 StatefulSet + SQLite 改为 Deployment + 外部 PostgreSQL；
+  两个独立 Helm release（p4a/p4b）共用一套 PG，同 release 2 副本 HA。脚本 `openshell4/`，结论见 **§13**。
+  它不改 POC2/POC3 的 Gateway。
+- **当前有效结论**：第二轮的组件结论 + 第三轮的身份/权限与网络隔离更正 + **第四轮的存储形态（§13）**。
 ## 12. POC3（第三轮，2026-11-10）：一套权限体系统管 Kubernetes 与 OpenShell
 
 > 设计原文见 [`POC3.md`](POC3.md)。整张矩阵由 `poc/phases/14-identity-federation.sh` 一条命令跑完，
@@ -744,6 +749,11 @@ poc/
 ### 12.1 一、身份与声明设计（配置文档）
 
 #### 12.1.1 目录（LDAP）—— 唯一的真实来源
+
+> ⚠ **2026-11-11 目录重建过**：LDAP 重新 seed 后 `entryUUID` 全变了（例如 alice 现在是
+> `674f092a-71c7-1041-817c-7f0afac63416`）。本节里的 `3affaeaa-… / 3b008514-…` 等值属于 **11-10 那次运行**，
+> 是当时的证据原文；**复验时按 token 现场读，不要抄常量**（§12.7）。2026-11-11 还修了 `realm-script.sh`
+> 的 `find_id` 与 scope 挂载两个 bug，replay 现在能稳定产出 `aud/groups/tenant`。
 
 模拟"我方 LDAP Server"（OpenLDAP 1.5.0，`identity/openldap`）。**租户身份只存在于目录里**：
 租户标识是 `departmentNumber`，角色是 `ou=groups` 下的 `groupOfNames` 成员关系。
@@ -792,7 +802,7 @@ member: uid=tadmin,ou=people,dc=aisanbox,dc=example
 
 | Mapper（文件） | 类型 | 来源 | claim | 实测示例值 |
 |---|---|---|---|---|
-| `poc3-sub-from-ldap`（`24-claim-sub-from-ldap.json`） | `oidc-usermodel-attribute-mapper` | 用户属性 `LDAP_ID`（= entryUUID） | **`sub`** | alice `3affaeaa-70f6-1041-996a-41648389b70a` |
+| `poc3-sub-from-ldap`（`24-claim-sub-from-ldap.json`） | `oidc-usermodel-attribute-mapper` | 用户属性 `LDAP_ID`（= entryUUID） | **`sub`** | alice `3affaeaa-70f6-1041-996a-41648389b70a`（11-10 那次运行的值；11-11 目录重建后已变，复验时从 token 现场读） |
 | `poc3-tenant`（`21-claim-tenant.json`） | `oidc-usermodel-attribute-mapper` | 用户属性 `tenant`（由 LDAP mapper `tenant-attr` 从 `departmentNumber` 读入） | **`tenant`** | `tenant-a` |
 | `poc3-roles`（`22-claim-roles.json`） | `oidc-usermodel-realm-role-mapper`，`multivalued=true` | realm roles（由 LDAP mapper `dir-roles` 从 `ou=groups` 载入，`mode=LDAP_ONLY`） | **`groups`**（扁平数组） | alice `["os-user","tenant-a-owners","tenant-a-users"]` |
 | `poc3-audience`（`23-claim-audience.json`） | `oidc-audience-mapper` | `included.client.audience=openshell-cli` | `aud` | `openshell-cli` |
@@ -1129,3 +1139,308 @@ OPENSHELL_GATEWAY_INSECURE=true $CLI -g p3-alice workspace list
 5. CLI 的 WARN 在 stdout、Error 在 stderr，且不保证进管道 —— 断言要读落到文件的完整输出。
 
 ---
+
+## 13. POC4（第四轮，2026-11-11）：Gateway 改 Deployment + PostgreSQL，多 Gateway 共用一库
+
+> 脚本：[`poc/openshell4/80-gateway-pg.sh`](poc/openshell4/80-gateway-pg.sh)（装 PostgreSQL + 两个 Helm release）、
+> [`81-shared-db-verify.sh`](poc/openshell4/81-shared-db-verify.sh)（验证矩阵）、
+> [`82-cli-login.sh`](poc/openshell4/82-cli-login.sh)（device flow 登录）。
+> 远端原始输出 `/tmp/p4-81f.log`，末尾 `PASS=33 FAIL=0`。
+> 身份链沿用 POC3（Keycloak NodePort 31443），本轮只改 Gateway 的存储形态。
+
+### 13.0 一句话结论
+
+**能。** `workload.kind: deployment` + `server.externalDbSecret` 让 Gateway 把控制面状态放进外置
+PostgreSQL；**两个独立 Helm release（p4a / p4b）共用同一套 PG 后，确实读到同一份状态**：
+A 上建的 workspace / member / provider，B 立刻可读；删掉 p4a 的全部 Pod 状态不丢；非成员 bob
+在 B 上仍被拒。同一 release 扩到 2 副本也成立：杀掉 1 个副本，连续 10 次调用全部成功，副本自动补回。
+
+但有三个必须一起满足的前提，否则"共库"只是连上了同一个端口：
+
+| 前提 | 为什么 | 本轮怎么验的 |
+|---|---|---|
+| 两个 release 共用同一个 **KEK Secret** | 凭据在库里是 AES-256-GCM 密文；KEK 默认每个 release 各生成一个 | K-04/K-05 断言两台的 Secret 引用与值逐字节相同；**解密失败路径未测**（§13.3） |
+| 两个 release 的 **OIDC 配置一致** | 身份来自 token；issuer / audience / role 映射不一致会让同一用户在两台权限不同 | 两个 release 用同一份 values 渲染（§13.1） |
+| 共享 **runtime namespace**（本轮 `poc4-runtime`） | Sandbox 是 Kubernetes 对象，不是 PG 行；两台 Gateway 的 Kubernetes driver 都从这个 ns 列 Sandbox | `kubectl -n poc4-runtime get sandboxes`；PG 的 `objects` 里**没有** sandbox 行 |
+
+⚠ 第 3 条最容易被误读成"PG 共享了 sandbox 状态"。**不是**：本轮 sandbox 跨 Gateway 可见，
+来自共享 runtime ns + Kubernetes driver；PG 共享的是 workspace / member / provider / provider profile
+这些**控制面对象**。两件事必须分开取证。
+
+| 验收面 | 结论 | 证据 |
+|---|---|---|
+| 形态 | ✅ Deployment，不是 StatefulSet | D-01/D-02；`kubectl get deploy,sts` 只有 deploy |
+| 存储入口 | ✅ `OPENSHELL_DB_URL` 来自 Secret，启动参数里没有 `--db-url` | D-03..D-06 |
+| PG schema | ✅ Gateway 启动时自动建表 | `_sqlx_migrations` 7 条；p4b 日志 `relation "_sqlx_migrations" already exists, skipping` |
+| 控制面共享 | ✅ A 写 B 读 | S-02/S-03、K-01/K-02/K-03 |
+| 重启不丢 | ✅ 删 p4a 全部 Pod 后 B 仍可读，p4a 重建后自己也能读回 | S-08..S-10 |
+| 权限仍生效 | ✅ 非成员 bob 在 B 上被拒 | S-06/S-07 |
+| chart 硬约束 | ✅ 负向对照有精确报错 | S-11..S-14 |
+| 同 release 多副本 | ✅ 2 副本，杀 1 个后 10/10 调用成功并自愈 | S-15..S-18 |
+| 凭据共库 | ✅ PG 里有该 provider 行，两台读到同一条 id；KEK 配置一致 | K-01..K-05（含 K-02a） |
+| 凭据解密失败 | ⚠️ **未测**（不伪造） | §13.3 |
+
+---
+
+### 13.1 配置文档
+
+#### 13.1.1 chart 0.1.7 的硬约束：两个值必须成对出现
+
+这不是"两个独立开关"。`workload.kind` 和 `server.externalDbSecret` 有代码级耦合：
+
+| 配置 | 结果（helm 原文） | 用例 |
+|---|---|---|
+| `workload.kind=statefulset` + `replicaCount=2`，无 externalDbSecret | `Error: execution error at (helm-chart/templates/supervisor.yaml:1:4): replicaCount > 1 requires server.externalDbSecret; multiple gateway replicas cannot share the default per-pod SQLite database.` | S-11 |
+| `workload.kind=deployment`，无 externalDbSecret | `Error: execution error at (helm-chart/templates/supervisor.yaml:1:4): workload.kind=deployment requires server.externalDbSecret; use workload.kind=statefulset for the default SQLite database.` | S-12 |
+| `workload.kind=deployment` + `server.externalDbSecret=p4-db-uri` | 渲染出 `OPENSHELL_DB_URL`（来自 Secret key `uri`），且**不渲染** `--db-url` | S-13/S-14 |
+
+另外，chart 0.1.7 **不再自带 PostgreSQL**：`postgres.enabled` 已删除，平台必须自备一台。
+
+#### 13.1.2 PostgreSQL（本轮最小形态）
+
+[`poc/openshell4/postgres.yaml`](poc/openshell4/postgres.yaml)：`poc4-db` namespace、单副本
+`postgres:16-alpine`、2Gi PVC（`subPath: pgdata`）、`pg_isready` 探针、Service `postgres:5432`。
+密码在 `postgres-credentials` Secret。**这是 POC 形态，不是生产形态**（无 HA / 备份 / 连接池 / TLS）。
+
+连接串放进两个 Gateway namespace 各自的 Secret（Secret 不能跨 ns 引用，所以是两个同名同值的
+`p4-db-uri`，key `uri`）：
+
+```
+postgresql://openshell:poc4pass@postgres.poc4-db.svc.cluster.local:5432/openshell
+```
+
+#### 13.1.3 两个 release 的差异只有名字/ns/端口
+
+| 项 | p4a | p4b |
+|---|---|---|
+| Helm release | `p4a` | `p4b` |
+| namespace | `poc4-gw-a` | `poc4-gw-b` |
+| DB Secret | `p4-db-uri`（同值） | `p4-db-uri`（同值） |
+| KEK Secret | `p4-credential-kek` | 同值复制一份 |
+| runtime namespace | `poc4-runtime` | 同一个 |
+| workspace chart | `os-ws-p4a`（SA `p4a-openshell` / `p4a-openshell-sandbox`） | `os-ws-p4b`（SA `p4b-...`） |
+| NodePort | 31445 | 31446 |
+| OIDC | 同 issuer / audience / rolesClaim | 同 |
+
+workspace chart 装两遍是为了给每台 Gateway 各自的 ServiceAccount 与 NetworkPolicy；
+`server.sandboxNamespace` 都指向 `poc4-runtime`（shared 模式）。Gateway 生成的
+`openshell-client-tls` 只需复制一份到共享 runtime ns（POC2 起的老坑：缺了 supervisor 卡
+`ContainerCreating`）。
+
+#### 13.1.4 本轮 values 的关键项
+
+```yaml
+workload:
+  kind: deployment
+
+server:
+  externalDbSecret: "p4-db-uri"      # Secret key: uri（与 deployment 成对，见 13.1.1）
+  credentialStorage:
+    existingSecret: "p4-credential-kek"   # 两台必须同值；默认是每 release 各生成一个
+  oidc: { issuer: "__ISSUER__", audience: "openshell-cli", rolesClaim: "groups",
+          adminRole: "os-admin", userRole: "os-user", caConfigMapName: "oidc-ca" }
+  drivers:
+    kubernetes:
+      workspaceMode: shared
+      allowDriverConfig: true
+```
+
+完整文件：[`poc/openshell4/gateway-pg-values.yaml`](poc/openshell4/gateway-pg-values.yaml)。
+
+---
+
+### 13.2 实测结果（`PASS=33 FAIL=0`）
+
+**本轮先从空库重建再验证**：删掉 PG 的 Deployment/PVC/Service 后重建 —— `information_schema` 里
+**0 张表**、数据库 7.5 MB（空模板）；再启动两台 gateway，schema 完全由 gateway 启动时自动建出
+（7 条 `_sqlx_migrations`），此时 `objects` 里只有默认 workspace、2 条 `gateway_member`、1 条
+`reconciler_lease`。在这个空库上重跑整套矩阵，结果仍是 `PASS=33 FAIL=0`：状态完全由 PostgreSQL
+提供，不依赖上一轮的残留。
+
+**形态与存储（D）**：两个 release 都是 Deployment；`OPENSHELL_DB_URL` 都指向 `p4-db-uri`；
+容器 args 只有 `--config /etc/openshell/gateway.toml`（没有 `--db-url`）。PG 里只有两张表：
+
+```
+_sqlx_migrations    7 行
+objects             workspace / workspace_member / gateway_member /
+                    provider / provider_profile / credential.gateway-encrypted /
+                    reconciler_lease（序列化 payload，按 object_type + workspace 存）
+```
+
+p4a 先启动并建表；p4b 启动日志出现
+`sqlx::postgres::notice: relation "_sqlx_migrations" already exists, skipping` —— 两个 release
+共用同一份 schema，不是各建各的。两台的启动日志都打印
+`sizing Postgres connection pools max_connections=10 lock_max_connections=4`；但池是**按需打开**的：
+3 个 gateway Pod（p4a 两副本 + p4b）同时在线时，`pg_stat_activity` 里总共只有 11–14 条会话
+（本轮 D-07 实测 11 条），不是 3×14 的上限。
+
+**控制面共享（S）**：p4a 创建 workspace → p4b `workspace list` 立即可见；把 alice 加为成员 →
+p4b-alice 可见；p4a 创建的 sandbox 在 p4b 的 `sandbox list` 里可见。在 p4b 上建同名 workspace
+返回 `already exists`；非成员 bob 在 p4b 上既看不到、也进不去（拒绝原文为
+`not a member of workspace '...'`）。
+
+**重启不丢（S-08..S-10）**：删掉 p4a 的**全部** Pod 后，p4b 仍能读到 workspace 与 sandbox；
+p4a 重建后自己也能读回。状态不在 Pod 本地 SQLite 里。
+
+**chart 负向对照（S-11..S-14）**：见 §13.1.1 的三条报错原文；正向渲染包含
+`OPENSHELL_DB_URL`、不包含 `--db-url`。
+
+**同 release 多副本（S-15..S-18）**：`replicaCount` 1 → 2 成功，两副本 Running；杀掉其中
+1 个后连续 10 次 `whoami` 全部成功（另一副本在服务），副本数自动补回 2。
+
+**凭据（K）**：导入一个最小自定义 provider profile（`id: poc4-kek`，credential `API_KEY`），
+在 A 上 `provider create` 返回 `✓ Created provider p4-kek`；接着直接查 PG：`objects` 表里存在
+该 workspace 下 `object_type='provider'`、`name='p4-kek'` 的一行（K-02），说明凭据密文确实落在
+PostgreSQL 而不是 A 的本地。B 上 `provider get` 返回**同一条 id**——本轮 A/B 实测都是
+`b9b12042-8ca8-4bcb-9868-419e17164313`（K-03；每次重跑会新建 workspace，id 随之变化，
+要比的是「两台相同」而不是某个固定值），`Credential keys: API_KEY` 也一致。两台的
+`OPENSHELL_GATEWAY_CREDENTIAL_KEY_ENCRYPTION_KEY` 都引用 `p4-credential-kek`，
+两个 ns 里的值逐字节相同。
+
+---
+
+### 13.3 多个 Gateway 共用一套 PostgreSQL：能到什么程度
+
+分三层说，结论不一样：
+
+1. **同一个 release 的多个副本：支持，且实测可用。**
+   chart 明确要求 `replicaCount>1` 时必须给 `externalDbSecret`（否则拒绝，见 S-11）；本轮用
+   Deployment + externalDbSecret 跑 2 副本、杀 1 个后 10/10 成功。适合做 Gateway 的 HA。
+
+2. **两个独立 release 共用一个库：技术上成立，但不是 chart 的契约。**
+   本轮 p4a / p4b 是两个独立 Helm release、两个 namespace、两个 NodePort，连同一个库；
+   控制面对象互通。库里有且只有一条 `reconciler_lease`；本轮结束时一台 gateway 打印过
+   `acquired reconciler lease` 并一直持有，另一台只打印 `reconciler lease coordinator started`
+   —— 说明多 Gateway 的 reconciler 用库里的租约做互斥（谁抢到取决于启动顺序：重建 PG 后
+   第一次启动是 p4a 抢到，重启一轮后换成了 p4b）。
+   ⚠ 证据边界：S-08 删掉的旧 Pod 日志随 Pod 消失，回看不到更早的竞争；是否完全避免重复
+   reconcile 也没有做压力验证。但 chart 没有"多 release 共库"的文档或
+   校验，以下都要自己保证：
+   - **KEK 必须共用**，否则 A 写的凭据 B 解不开（设计约束，见下）。
+   - **OIDC 配置必须一致**（issuer/audience/rolesClaim/角色名），否则同一用户在两台权限不同。
+   - **版本必须一致**（同一套 sqlx migration）；滚动升级时建议先升一台、确认 migration 成功再升另一台。
+   - **容量**：每个 Gateway 进程的池容量是 10 条普通连接 + 4 条锁连接（启动日志），多台共库要按
+     `PostgreSQL max_connections` 预留上限；实测池按需打开——本轮 3 个 Pod 在线时实测 11–14 条会话（D-07 为 11）。
+     注意这是**本轮观察值**，不是上限，压力下会向 10+4/进程 增长。
+   - **并发写**：`objects` 表有 `resource_version` 字段；它是否被用作乐观锁、两个 Gateway 同时改
+     同一个对象会返回什么，本轮**没有压测**，不要把它当强一致协调器用。
+
+3. **KEK 解密失败：本轮没有测出来，不记 PASS。**
+   chart 把凭据以 AES-256-GCM 加密存库，KEK 默认是 per-release Secret —— 所以"共库必须共 KEK"
+   是**设计约束**。但实测里：把 p4b 的 KEK 换成另一个值并重启后，`provider get` 仍然成功
+   （它只读元数据，不触发解密）；用最小自定义 profile 建 sandbox 也没构造出"解密失败"的
+   可观测面。因此本报告只把 K-04/K-05 记作**配置一致**，不声称"测到了解密失败"。
+
+**一句话**：把多个 Gateway 指向同一个 PG，状态确实共享；但它是"**共享数据库的多个控制面**"，
+不是"一个无状态服务随便扩容"。KEK、OIDC、版本、连接数四件事必须一起管。
+
+---
+
+### 13.4 从 SQLite 迁到 PostgreSQL 的真实成本
+
+- **没有迁移工具**：CLI 没有 `migrate` / `export` 子命令（`openshell --help` 只有 sandbox /
+  provider / profile / gateway 等）；Gateway 启动时用 sqlx 自动建 schema，但**不会**把旧
+  SQLite 里的对象搬过来。
+- **SQLite 数据是 per-Pod 的**：默认 StatefulSet 每个 Pod 一个库，换 Deployment 后旧库不再被挂载。
+  现有 workspace / member / provider 需要**重新创建**；sandbox 本身是运行态对象，重建即可。
+- **KEK 换了就解不开旧凭据**：如果沿用旧 KEK，把它做成 Secret 挂给新 Deployment；换新 KEK
+  等于所有已存凭据作废，需要重新录入。
+- **可接受的迁移姿势**：先起 PG 与新 Gateway（新 NodePort），用 CLI 把 workspace/member/provider
+  重新声明一遍，验证后再切流量；不要期望原地升级自动搬数据。
+
+---
+
+### 13.5 手工复验（NodePort，不用 port-forward）
+
+```bash
+ssh root@192.168.5.190
+cd /root/poc2
+
+# 0) 前置：POC3 身份链已就绪（Keycloak 31443）
+kubectl --context kind-agent-runtime-poc -n identity get cm kc-config
+
+# 1) 装 PG + p4a/p4b（可重复执行）
+bash openshell4/80-gateway-pg.sh
+
+# 2) CLI device-flow 登录（每个 profile 一次）
+bash openshell4/82-cli-login.sh
+
+# 3) 跑矩阵；末尾必须是 PASS=33 FAIL=0
+bash openshell4/81-shared-db-verify.sh 2>&1 | tee /tmp/p4-81f.log
+
+# 3b) 想从空库重来（⚠ 清空全部 workspace/provider/凭据，不可恢复）
+#     顺序：停 gateway → 删 PG → 建空库 → 清 runtime ns 里的孤儿 sandbox → 再启 gateway
+CFG="--context kind-agent-runtime-poc"
+kubectl $CFG -n poc4-gw-a scale deploy/p4a-openshell --replicas=0
+kubectl $CFG -n poc4-gw-b scale deploy/p4b-openshell --replicas=0
+kubectl $CFG delete -f openshell4/postgres.yaml
+kubectl $CFG apply -f openshell4/postgres.yaml
+kubectl $CFG -n poc4-db rollout status deploy/postgres --timeout=180s
+kubectl $CFG -n poc4-runtime delete sandboxes.agents.x-k8s.io --all
+kubectl $CFG -n poc4-gw-a scale deploy/p4a-openshell --replicas=1
+kubectl $CFG -n poc4-gw-b scale deploy/p4b-openshell --replicas=1
+#     启动后应看到 gateway 自动建表：psql -c 'select count(*) from _sqlx_migrations' → 7
+
+# 单看 PG 里到底存了什么
+P=$(kubectl --context kind-agent-runtime-poc -n poc4-db get pod -l app=postgres -o jsonpath='{.items[0].metadata.name}')
+kubectl --context kind-agent-runtime-poc -n poc4-db exec $P -- \
+  psql -U openshell -d openshell -c "select object_type,count(*) from objects group by 1 order by 1"
+
+# 看两个 release 的 DB 入口（应该都是 p4-db-uri，且 args 没有 --db-url）
+kubectl --context kind-agent-runtime-poc -n poc4-gw-a get deploy p4a-openshell \
+  -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="OPENSHELL_DB_URL")].valueFrom.secretKeyRef.name}{"\n"}'
+kubectl --context kind-agent-runtime-poc -n poc4-gw-b get deploy p4b-openshell \
+  -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="OPENSHELL_DB_URL")].valueFrom.secretKeyRef.name}{"\n"}'
+```
+
+**复验时最容易误判的 5 处（本轮都踩过）：**
+
+1. **workspace 删除会被 provider/profile 卡住**。只删 sandbox 不够：workspace 里还有
+   provider 或 provider profile 时，`workspace delete` 返回
+   `still contains resources: provider profile`，workspace 留在 `Terminating`；下一轮
+   `workspace create` 得到 `already exists`，后续 `profile import` / `sandbox create` 全部
+   `FAILED_PRECONDITION`。清场顺序必须是 **sandbox → provider → profile → workspace**。
+   本脚本每轮用新的 workspace 名，避免把上一轮的状态当成本轮成功。
+2. **`sandbox` 不在 PG 里**。跨 Gateway 看到 sandbox 是共享 runtime ns 的功劳，不是数据库
+   共享的证据；不要把 D/S 的结论写成"PG 存了 sandbox"。
+3. **CLI 的 WARN 与结果在不同行**。把输出 `tr '\n' ' '` 再 `grep -v WARN` 会把结果一起删掉，
+   证据行变成空；要按行过滤，或直接断言落到文件的完整输出。
+4. **`profile import` 是 workspace 级的**。在 A 的 workspace 里导入的 profile，不会自动出现在
+   别的 workspace；`provider create` 报 `provider profile '...' not found` 时先看导入到哪了。
+5. **KEK 的 Secret 值不能再 base64 一次**。`jsonpath` 读出来已经是 base64；用
+   `--from-literal` 重建会把 base64 文本再编码，Gateway 报
+   `key_encryption_key_env value must decode to exactly 32 bytes`。要么 `base64 -d`，要么
+   直接 patch `data` 字段。
+
+---
+
+### 13.6 生产部署方案（设计与渲染完成，未在 POC 集群实跑）
+
+POC4 回答的是"能不能"；真正上生产用 [`poc/openshell4/production/`](poc/openshell4/production/)：
+
+| 文件 | 作用 |
+|---|---|
+| `README.md` | 生产 runbook：容量公式、升级/迁移流程、备份恢复、安全与验收清单 |
+| `values-gateway-prod.yaml` | 3 副本 Deployment、外置 PG、边缘 TLS 终止 + OIDC、资源/反亲和 |
+| `postgres-cnpg.yaml` | CloudNativePG 3 实例 + PgBouncer(session) + S3 备份（托管 PG 见 runbook §3.1） |
+| `deploy-prod.sh` | 幂等部署脚本（前置检查 → workspace 资源 → gateway → PDB/监控 → 断言） |
+| `secrets-external-secrets.yaml` | DB URI / KEK 用 External Secrets 从 Vault/KMS 注入 |
+| `networkpolicy.yaml`、`pdb-gateway.yaml`、`certificate-edge-tls.yaml` | 网络隔离、可用性、边缘证书 |
+| `servicemonitor.yaml`、`prometheusrule.yaml` | 抓取与告警（指标名取自 POC4 实抓） |
+
+与 POC4 的关键差别：
+
+- **单 release 3 副本**，不是一个库上挂两个独立 release（后者不是 chart 契约，见 §13.3）。
+- 外置 PG 要求 **TLS + 多 AZ + PITR**：托管 PG（首选）或 CNPG 3 实例；
+  PgBouncer 必须 **session** 模式（sqlx 用服务端 prepared statements）。
+- 边缘由 Gateway API 终止 TLS，gateway 在集群内明文 + OIDC（chart 明确支持），
+  不再向每个 CLI 分发 mTLS 客户端证书。
+- KEK 由 Vault/KMS 注入且**终身不换**；PG 备份里只有密文凭据，恢复演练必须连 KEK 一起恢复。
+- 升级顺序：**缩到 1 副本 → 升镜像/values → 验证 `_sqlx_migrations` → 扩回 3**，避免多副本并发 DDL。
+
+**验证边界**：`values-gateway-prod.yaml` 已用 `helm template` 渲染通过
+（Deployment/3 副本、`OPENSHELL_DB_URL` 来自 Secret、args 无 `--db-url`、
+GRPCRoute/Gateway HTTPS、OIDC 写入 TOML、连接池 10+4、Service 暴露 metrics 9090）；
+但托管 PG、CNPG、cert-manager、External Secrets、NetworkPolicy、备份恢复、
+并发迁移与 HPA **都没有在本 POC 集群跑过**，逐条列在 `production/README.md` §12。
+这些是部署方案，不是已验证结论。

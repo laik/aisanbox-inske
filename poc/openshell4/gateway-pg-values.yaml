@@ -1,0 +1,79 @@
+# POC4 —— 与 POC3 的 OIDC Gateway 同一套认证，只换两件事:
+#   1) `workload.kind: deployment`(默认是 statefulset，理由就是"默认 SQLite 要 per-pod 存储")
+#   2) `server.externalDbSecret` 指向一个含 `uri` key 的 Secret ⇒ 网关读 OPENSHELL_DB_URL，
+#      `--db-url sqlite:...` 这个参数**根本不会被渲染**(见 chart _gateway-workload.tpl:64)。
+#
+# ⚠ 这两项是**硬耦合**，不是两个独立开关:
+#   - deployment 没有 externalDbSecret ⇒ helm **直接 fail**:
+#       "workload.kind=deployment requires server.externalDbSecret"
+#   - replicaCount>1 没有 externalDbSecret ⇒ 也 fail:
+#       "multiple gateway replicas cannot share the default per-pod SQLite database"
+#   所以要"多副本/多 Gateway 共享一台 PG"，这两个值必须成对出现。
+#
+# ⚠ 共享一台 PG 的**隐藏前提**(chart 源码/注释层面): 凭据在库里是 AES-256-GCM 加密的，
+#   KEK 默认是**每个 release 各生成一个 Secret**。两个 release 共库但不共 KEK ⇒ A 写的
+#   Provider 凭据 B 解不开。这里用 `server.credentialStorage.existingSecret` 让两个 release
+#   指向同一个 KEK Secret(由 80 脚本创建)。
+#   ⚠ 边界: 本 POC **没能**构造出"解密失败"的可观测面(provider get 不解密，最小自定义
+#   profile 也没有 env 注入)，所以这一条是设计约束，不是实测结论 —— 见 README §13.3。
+
+workload:
+  kind: deployment
+
+replicaCount: 1          # 先 1，验证共享库; 多副本由 81 脚本 helm upgrade 到 2
+
+workspaceResources:
+  enabled: false
+
+server:
+  logLevel: info
+
+  oidc:
+    issuer: "__ISSUER__"
+    audience: "openshell-cli"
+    rolesClaim: "groups"
+    adminRole: "os-admin"
+    userRole: "os-user"
+    scopesClaim: ""
+    caConfigMapName: "oidc-ca"
+    jwksTtl: 600
+
+  auth:
+    allowUnauthenticatedUsers: false
+
+  tls:
+    enableMtls: false
+    clientCaSecretName: ""
+
+  # 共享同一台 PostgreSQL: 与 workload.kind=deployment 成对出现(见上)
+  externalDbSecret: "p4-db-uri"
+
+  credentialStorage:
+    existingSecret: "p4-credential-kek"   # 两个 release 共用; 见文件头 ⚠
+
+  drivers:
+    kubernetes:
+      workspaceMode: shared
+      allowDriverConfig: true
+      resourceAdmission:
+        enabled: true
+        requiredLabels:
+          openshell.ai/sandbox-attachable: "true"
+          example.com/workspace: "${workspace}"
+
+  otlp:
+    endpoint: http://otel-collector.observability.svc:4317
+
+  ocsfLog:
+    enabled: true
+    path: /var/openshell/poc4-gateway-ocsf.jsonl
+
+resources:
+  requests: {cpu: 100m, memory: 256Mi}
+  limits: {cpu: 500m, memory: 768Mi}
+
+gatewayConfig:
+  "openshell.gateway.otlp.agent":
+    enabled: true
+  "openshell.gateway.otlp.ocsf":
+    enabled: true

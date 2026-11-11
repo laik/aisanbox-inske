@@ -1,0 +1,98 @@
+# =============================================================================
+# Gateway 的进出流量策略（参考实现）
+#
+# ⚠ 这一份**必须在预发、在你的 CNI 上实测**再上生产：
+#   - 健康探针（8081）由 kubelet 发起，不同 CNI 对节点流量的处理不同；
+#   - Kubernetes API（TokenReview / Sandbox CRD）走 Service ClusterIP 或控制面 IP；
+#   - OIDC issuer 是外部地址，ipBlock 要换成你的真实出口段。
+# 先用 `kubectl -n openshell describe` + CNI 流量日志确认，再收紧。
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: openshell-gateway-ingress
+  namespace: openshell
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: openshell
+      app.kubernetes.io/instance: openshell
+  policyTypes: [Ingress]
+  ingress:
+    # 1) 边缘代理 -> gRPC/HTTP :8080
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: envoy-gateway-system
+      ports:
+        - {port: 8080, protocol: TCP}
+    # 2) Prometheus -> 指标 :9090
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - {port: 9090, protocol: TCP}
+    # 3) 同 release 的副本互连（peer relay）:8080
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: openshell
+              app.kubernetes.io/instance: openshell
+      ports:
+        - {port: 8080, protocol: TCP}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: openshell-gateway-egress
+  namespace: openshell
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: openshell
+      app.kubernetes.io/instance: openshell
+  policyTypes: [Egress]
+  egress:
+    # DNS
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - {port: 53, protocol: UDP}
+        - {port: 53, protocol: TCP}
+    # PostgreSQL（直连或 pooler 都在这个 namespace）
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshell-db
+      ports:
+        - {port: 5432, protocol: TCP}
+    # OIDC issuer（换成你的 IdP 出口地址/段）
+    - to:
+        - ipBlock:
+            cidr: 203.0.113.10/32
+      ports:
+        - {port: 443, protocol: TCP}
+    # Kubernetes API（TokenReview、Sandbox CRD）；换成你的 service CIDR / 控制面地址
+    - to:
+        - ipBlock:
+            cidr: 10.96.0.1/32
+      ports:
+        - {port: 443, protocol: TCP}
+    # Sandbox supervisor：runtime namespace 内的 SSH/回连端口
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshell-runtime
+      ports:
+        - {port: 22, protocol: TCP}
+        - {port: 2222, protocol: TCP}
+    # OTLP collector
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+      ports:
+        - {port: 4317, protocol: TCP}

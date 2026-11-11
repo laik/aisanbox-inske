@@ -1,0 +1,92 @@
+# =============================================================================
+# 生产 PostgreSQL（方案 B）：CloudNativePG 3 实例 + PgBouncer(session) + S3 备份
+#
+# 方案 A（推荐，托管 PG：RDS / Cloud SQL / AlloyDB / Aurora）不需要本文件，见 README §3.1。
+# 本文件要求集群已安装 CloudNativePG operator（>=1.22，app Secret 才带 uri 键）：
+#   kubectl apply --server-side -f \
+#     https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.25/releases/cnpg-1.25.1.yaml
+# ⚠ 本文件**没有在 kind 上实跑**（kind 无多节点拓扑、无 S3、无生产 CNI）。
+#    上生产前必须在预发按 README §12 的清单逐项验证。
+# =============================================================================
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: openshell-pg
+  namespace: openshell-db
+spec:
+  instances: 3                     # 1 主 2 备；允许任意 1 台故障
+  imageName: ghcr.io/cloudnative-pg/postgresql:16
+  # 生产请固定 digest：imageName: ghcr.io/cloudnative-pg/postgresql@sha256:...
+
+  storage:
+    size: 100Gi
+    storageClass: fast-ssd         # 改成你的块存储 StorageClass；不要 NFS
+
+  resources:
+    requests: {cpu: "1", memory: 2Gi}
+    limits:   {cpu: "4", memory: 4Gi}
+
+  # 主备反亲和：3 个实例尽量不在同一节点
+  affinity:
+    enablePodAntiAffinity: true
+    topologyKey: kubernetes.io/hostname
+    podAntiAffinityType: preferred
+
+  postgresql:
+    parameters:
+      # 连接数预算：gateway 3 副本 × 14 + 滚动 surge 14 + pgbouncer 3×50 + 运维 20
+      # = 226；留余量取 300。pooler 复用连接，实际后端连接远小于客户端连接数。
+      max_connections: "300"
+      shared_buffers: "1GB"
+      effective_cache_size: "3GB"
+      work_mem: "8MB"
+      maintenance_work_mem: "256MB"
+      ssl_min_protocol_version: "TLSv1.2"
+      log_min_duration_statement: "1000"   # 慢查询 >1s 记日志
+    pg_hba:
+      - hostssl all all 0.0.0.0/0 scram-sha-256
+      - hostssl all all ::/0 scram-sha-256
+
+  monitoring:
+    enablePodMonitor: true
+
+  backup:
+    retentionPolicy: "30d"
+    barmanObjectStore:
+      destinationPath: "s3://REPLACE-BUCKET/openshell-pg"
+      endpointURL: "https://s3.REPLACE-REGION.amazonaws.com"
+      s3Credentials:
+        accessKeyId: {name: openshell-pg-backup, key: ACCESS_KEY_ID}
+        secretAccessKey: {name: openshell-pg-backup, key: SECRET_ACCESS_KEY}
+      wal:  {compression: gzip, maxParallel: 2}
+      data: {compression: gzip, jobs: 2}
+---
+# 会话池模式：sqlx 使用服务端 prepared statements，transaction 模式会报
+# "prepared statement already exists / does not exist"。必须 session。
+apiVersion: postgresql.cnpg.io/v1
+kind: Pooler
+metadata:
+  name: openshell-pg-pooler-rw
+  namespace: openshell-db
+spec:
+  cluster:
+    name: openshell-pg
+  instances: 3
+  type: rw
+  pgbouncer:
+    poolMode: session
+    parameters:
+      max_client_conn: "1000"
+      default_pool_size: "50"
+      server_idle_timeout: "60"
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: openshell-pg-nightly
+  namespace: openshell-db
+spec:
+  schedule: "0 0 2 * * *"          # 每天 02:00（CNPG 六段 cron）
+  backupOwnerReference: self
+  cluster:
+    name: openshell-pg

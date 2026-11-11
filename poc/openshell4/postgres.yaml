@@ -1,0 +1,77 @@
+# POC4 —— 外置 PostgreSQL(给 Gateway 换成 Deployment + 共享数据库用)。
+# ⚠ chart 0.1.7 **不再自带** PostgreSQL(values 里写 postgres.enabled 会直接 fail),
+#   要求平台自备一台,并通过 server.externalDbSecret 注入 URI(key: uri)。
+#   这里用最小可用形态: 单副本 + PVC + 密码 Secret。生产另说( HA / 备份 / 连接池 )。
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: poc4-db
+  labels: {app.kubernetes.io/part-of: aisanbox-poc4}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-credentials
+  namespace: poc4-db
+type: Opaque
+stringData:
+  POSTGRES_USER: openshell
+  POSTGRES_PASSWORD: poc4pass
+  POSTGRES_DB: openshell
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+  namespace: poc4-db
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources: {requests: {storage: 2Gi}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: poc4-db
+  labels: {app: postgres, app.kubernetes.io/part-of: aisanbox-poc4}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}      # RWO 卷 + 单副本: 滚动更新会卡在旧 Pod 不放卷
+  selector:
+    matchLabels: {app: postgres}
+  template:
+    metadata:
+      labels: {app: postgres}
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          envFrom:
+            - secretRef: {name: postgres-credentials}
+          ports: [{containerPort: 5432, name: postgres}]
+          readinessProbe:
+            exec: {command: ["pg_isready", "-U", "openshell", "-d", "openshell"]}
+            initialDelaySeconds: 3
+            periodSeconds: 3
+          livenessProbe:
+            exec: {command: ["pg_isready", "-U", "openshell", "-d", "openshell"]}
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 512Mi}
+          volumeMounts:
+            # subPath: 数据目录不要落在卷根(lost+found 会让 initdb 拒绝)
+            - {name: data, mountPath: /var/lib/postgresql/data, subPath: pgdata}
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: postgres-data}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: poc4-db
+spec:
+  selector: {app: postgres}
+  ports: [{name: postgres, port: 5432, targetPort: 5432}]

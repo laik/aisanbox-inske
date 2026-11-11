@@ -1,0 +1,165 @@
+# =============================================================================
+# OpenShell Gateway — 生产 values（单 release / Deployment / 外置 PostgreSQL）
+#
+# 部署前提：
+#   1. server.externalDbSecret 指向的 Secret（key: uri）已存在，且指向**带 TLS** 的 PG；
+#   2. credentialStorage.existingSecret 指向的 KEK Secret（key: key-encryption-key）
+#      已存在 —— 一旦有凭据写入就**不能换**，换 KEK 等于现有凭据全部作废；
+#   3. 边缘用 Gateway API（Envoy Gateway）终止 TLS，gateway 在集群内走明文 + OIDC。
+#      原因见 production/README.md §4：chart 明确支持这条路径（disableTls=true + OIDC），
+#      而不是把 mTLS 客户端证书分发给所有 CLI。
+#   4. 下面所有 *example.com / id.example.com* 都是占位，必须替换。
+#
+# 未在本 POC 实跑的部分在 README §12 里逐条列出；不要把本文件当成"已验证"。
+# =============================================================================
+
+workload:
+  kind: deployment
+
+# 3 副本：单副本故障、滚动升级(默认 maxUnavailable=25% → 至少 2 个可用)都可承受。
+# 不要跟着“两台独立 release 共库”的 POC 形态走；生产是**一个 release 多副本**。
+replicaCount: 3
+
+global:
+  image:
+    registry: ghcr.io/nvidia
+    tag: "0.1.7"          # 生产请改用 gateway.image.digest 固定到 digest
+    pullPolicy: IfNotPresent
+
+gateway:
+  image:
+    digest: ""            # 例: sha256:...  (非空时优先于 tag)
+
+# 3 副本必须落到 3 个不同节点；节点数 < 3 时把 required 改成 preferred，
+# 否则第 3 个 Pod 会一直 Pending。
+affinity:
+  podAntiAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: openshell
+            app.kubernetes.io/instance: openshell
+        topologyKey: kubernetes.io/hostname
+
+# 数值是起点，不是结论：上线前用 `kubectl top pod` 跑满一周再调。
+# autoscaling 需要 requests.cpu，这里先给出可用的基线。
+resources:
+  requests:
+    cpu: 500m
+    memory: 512Mi
+  limits:
+    cpu: "2"
+    memory: 2Gi
+
+# 固定副本数；要开 HPA 见 README §6 的连接数公式（maxReplicas × 14 是硬下限）。
+autoscaling:
+  enabled: false
+
+# 优雅退出：等待 supervisor 会话清理与 OCSF 缓冲落盘。
+podLifecycle:
+  terminationGracePeriodSeconds: 60
+
+service:
+  type: ClusterIP
+  port: 8080
+  healthPort: 8081
+  metricsPort: 9090
+
+# 说明：本基线使用默认的 per-sandbox supervisor（每个 sandbox 自带 supervisor），
+# 因此 supervisor.replicas / supervisor.podDisruptionBudget 不生效，这里不设置。
+# 若改用共享 supervisor 池（gatewayConfig 选 supervisor_topology=gateway），
+# 再按 chart 文档配置 supervisor.replicas>=2；本 POC 未实测该形态（README §12）。
+
+# 本 release 只管 gateway；sandbox 的 SA/Role/NetworkPolicy 由
+# openshell-workspace chart 装在 runtime namespace（见 README §5）。
+workspaceResources:
+  enabled: false
+
+server:
+  name: openshell
+  logLevel: info
+
+  # ── 存储：唯一入口是 Secret（key: uri），禁止在 values 里出现连接串 ──────
+  externalDbSecret: openshell-db
+
+  # ── 凭据：同一个 KEK 注入每一副本；生产不要用 chart 自动生成的那份 ──────
+  credentialStorage:
+    existingSecret: openshell-kek
+
+  # ── Sandbox 所在 namespace（本 release 之外，由 workspace chart 准备） ──
+  sandboxNamespace: openshell-runtime
+
+  # ── 边缘 TLS 终止 + OIDC（chart 支持的明文集群内模式） ────────────────
+  disableTls: true
+  tls:
+    enableMtls: false      # 身份交给 OIDC；mTLS 客户端证书不再分发
+  auth:
+    allowUnauthenticatedUsers: false   # 生产必须 false
+
+  oidc:
+    issuer: "https://id.example.com/realms/openshell"
+    audience: "openshell-cli"
+    rolesClaim: "realm_access.roles"
+    adminRole: "os-admin"
+    userRole: "os-user"
+    caConfigMapName: ""    # 公共 CA 留空；私有 CA 填 ConfigMap 名（key: ca.crt）
+    jwksTtl: 3600
+
+  drivers:
+    kubernetes:
+      workspaceMode: shared
+      allowDriverConfig: false          # 生产禁止调用方自带 driver JSON
+      resourceAdmission:
+        enabled: true                   # 外部资源挂载必须带审批标签
+
+  # 匿名遥测关掉；链路追踪走自己的 collector。
+  telemetryEnabled: false
+  extraEnv:
+    - name: OTEL_EXPORTER_OTLP_ENDPOINT
+      value: "http://otel-collector.observability.svc.cluster.local:4317"
+    # 如果 PG 用私有 CA 做 verify-full，用下面的 volume 挂 CA，
+    # 并把 URI 写成 ...?sslmode=verify-full&sslrootcert=/etc/openshell-db-ca/ca.crt
+  extraVolumes: []
+  # - name: openshell-db-ca
+  #   secret:
+  #     secretName: openshell-db-ca
+  extraVolumeMounts: []
+  # - name: openshell-db-ca
+  #   mountPath: /etc/openshell-db-ca
+  #   readOnly: true
+
+# 连接池上限：每副本 10 普通 + 4 锁 = 14。PG 的 max_connections 必须按
+# (副本数 + 滚动 surge) × 14 预留；3 副本 + surge 1 = 56，PG 默认 100 只够
+# 勉强，生产建议 >= 200（还要算 pooler/运维连接）。
+gatewayConfig:
+  openshell:
+    version: 2
+  openshell.gateway:
+    database_max_connections: 10
+    database_lock_max_connections: 4
+
+# ── 边缘：Gateway API（Envoy Gateway）终止 TLS，转发到 gateway 的明文 8080 ──
+# certificateRefs 指向同 namespace 的 kubernetes.io/tls Secret（cert-manager 签发）。
+grpcRoute:
+  enabled: true
+  hostnames:
+    - "openshell.example.com"
+  gateway:
+    create: true
+    className: "eg"
+    listener:
+      port: 443
+      protocol: HTTPS
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - group: ""
+            kind: Secret
+            name: openshell-edge-tls
+  backendTLSPolicy:
+    enabled: false         # gateway 已是明文，无需后端再加密
+
+# chart 自带的 sandbox SSH NetworkPolicy 保留；gateway 自身的进出流量策略见
+# production/networkpolicy.yaml（需按你的 CNI 在预发验证）。
+networkPolicy:
+  enabled: true

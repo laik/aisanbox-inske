@@ -1,0 +1,73 @@
+# 告警全部基于 POC4 实抓到的指标名（见 servicemonitor.yaml 顶部）。
+# 阈值是起点；先在预发观察两周再收紧，避免演示/发布时误报。
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: openshell-gateway
+  namespace: openshell
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: openshell-gateway
+      rules:
+        - alert: OpenShellDatabaseUnhealthy
+          expr: max by (namespace) (openshell_server_readiness_database_healthy) == 0
+          for: 2m
+          labels: {severity: critical}
+          annotations:
+            summary: "Gateway 连接不上 PostgreSQL"
+            description: "readiness_database_healthy=0 持续 2m；先查 PG 状态与 Secret openshell-db。"
+
+        - alert: OpenShellMutationLockTimeouts
+          expr: increase(openshell_server_mutation_lock_timeouts_total[5m]) > 0
+          for: 5m
+          labels: {severity: warning}
+          annotations:
+            summary: "写路径抢 PG advisory lock 超时"
+            description: "检查 PG 负载、lock_max_connections 是否被耗尽、是否多个 gateway 互相争锁。"
+
+        - alert: OpenShellMutationLockErrors
+          expr: increase(openshell_server_mutation_lock_errors_total[5m]) > 0
+          labels: {severity: critical}
+          annotations:
+            summary: "拿到锁连接失败（PG 连接池耗尽/网络）"
+            description: "mutation lock errors 非零通常意味着 lock 连接池拿不到连接；核对 max_connections。"
+
+        - alert: OpenShellMutationLockWaitHigh
+          expr: histogram_quantile(0.99, sum by (le) (rate(openshell_server_mutation_lock_wait_seconds_bucket[5m]))) > 1
+          for: 10m
+          labels: {severity: warning}
+          annotations:
+            summary: "写锁等待 p99 > 1s"
+            description: "控制面写请求开始排队；检查 PG CPU/IO 与长事务。"
+
+        - alert: OpenShellRelayRejected
+          expr: increase(openshell_server_relay_rejected_total[5m]) > 0
+          for: 5m
+          labels: {severity: warning}
+          annotations:
+            summary: "跨副本 relay 被拒"
+            description: "常见原因：peer ServiceAccount TokenReview 失败、NetworkPolicy 挡住 peer 流量。"
+
+        - alert: OpenShellRelayPendingNearCapacity
+          expr: openshell_server_relay_pending / openshell_server_relay_pending_capacity > 0.8
+          for: 5m
+          labels: {severity: warning}
+          annotations:
+            summary: "relay 待处理通道 > 80% 容量"
+            description: "supervisor 回连变慢；检查 supervisor 副本数与节点负载。"
+
+        - alert: OpenShellOCSFLogDropped
+          expr: increase(openshell_ocsf_log_dropped_total[10m]) > 0
+          labels: {severity: warning}
+          annotations:
+            summary: "审计/OCSF 日志被丢弃"
+            description: "队列满会丢日志；核对 otlp/日志收集器与 queueMaxBytes。"
+
+        - alert: OpenShellGatewayPodRestart
+          expr: increase(kube_pod_container_status_restarts_total{namespace="openshell", container="openshell-gateway"}[15m]) > 0
+          labels: {severity: warning}
+          annotations:
+            summary: "Gateway 容器重启"
+            description: "先看 kubectl -n openshell logs --previous；启动探测失败常因 PG/KEK Secret 不可读。"
