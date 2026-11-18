@@ -1,0 +1,28 @@
+# 数据 Agent 的模型 provider profile（OpenShell 不内置任何 profile，必须显式导入）。
+# 与 poc/providers/poc-model.yaml 同一个端点（宿主 Strata，OpenAI 兼容），
+# 但 binaries 换成 opencode 的真实路径 —— opencode 是 native 二进制（bun），
+# 不是 node 进程；列错路径 = 连接被拒，报错读起来像网络问题（POC2 实测）。
+# 真实路径以 build-image.sh 输出的 readlink -f 为准。
+id: da-model
+display_name: Data-agent model (OpenAI-compatible, on the host)
+description: Strata/llama.cpp endpoint for the opencode data agent
+category: inference
+inference_capable: true
+credentials:
+  - name: api_key
+    description: API key for the OpenAI-compatible endpoint
+    env_vars: [OPENAI_API_KEY]
+    required: true
+    auth_style: bearer
+    header_name: authorization
+endpoints:
+  - host: 192.168.5.190
+    port: 8080
+    protocol: rest
+    access: read-write
+    enforcement: enforce
+binaries:
+  - /usr/local/bin/opencode
+  # 实测真实路径（build-image.sh 的 readlink -f 输出，1.19.6）：
+  - /usr/local/lib/node_modules/opencode-ai/bin/opencode.exe
+  - /usr/bin/curl

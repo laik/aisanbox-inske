@@ -1,0 +1,31 @@
+# __DB_IP__ 由 demo.sh 替换（sandbox 内 DNS 不通，用 ClusterIP 字面量，
+# 见 poc/docs/FINDINGS.md §R2.4）。
+# 模型端点不用写在这里：--provider da-model  attach 时，OpenShell 按
+# profile 的 endpoints/binaries 自动富化策略（POC2 pi 场景同款机制）。
+version: 1
+filesystem_policy:
+  include_workdir: true
+  read_only:
+    - /bin
+    - /usr
+    - /lib
+    - /proc
+    - /dev/urandom
+    - /etc
+    - /var/log
+    - /vault/da-secrets
+  read_write:
+    - /tmp
+    - /dev/null
+    - /data/output
+landlock:
+  compatibility: best_effort
+network_policies:
+  demo_db:
+    name: "demo postgres (L4)"
+    endpoints:
+      - host: __DB_IP__
+        port: 5432
+    binaries:
+      - path: /usr/bin/psql
+      - path: /usr/lib/postgresql/15/bin/psql

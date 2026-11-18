@@ -1,0 +1,82 @@
+# 演示数据库（租户 namespace 内的普通 Deployment，不是 sandbox）。
+# 管理密码：服务端 env 来自 K8s Secret da-db-server（平台侧副本，10 脚本
+# 从 Vault 同步生成）；Agent 侧只走 Vault→PVC 渲染文件，不挂这个 Secret。
+# __DB_PW__ 由 10-vault-db-admin.sh 替换后 apply。
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: da-db-server
+  namespace: tenant-a-runtime
+type: Opaque
+stringData:
+  password: "__DB_PW__"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: da-db-init
+  namespace: tenant-a-runtime
+data:
+  init.sql: |
+    CREATE TABLE IF NOT EXISTS sales (
+      id SERIAL PRIMARY KEY,
+      region TEXT NOT NULL,
+      amount NUMERIC NOT NULL,
+      ts TIMESTAMPTZ DEFAULT now()
+    );
+    INSERT INTO sales (region, amount) VALUES
+      ('east', 1200), ('west', 980), ('north', 1500), ('south', 760),
+      ('east', 2100), ('west', 430), ('north', 1100), ('south', 1890),
+      ('east', 670), ('west', 2400), ('north', 520), ('south', 1340);
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: da-db
+  namespace: tenant-a-runtime
+  labels: { app: da-db }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: da-db }
+  template:
+    metadata:
+      labels: { app: da-db }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: da-db-server, key: password }
+            - name: POSTGRES_DB
+              value: appdb
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U postgres -d appdb"]
+            initialDelaySeconds: 5
+            periodSeconds: 3
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits:   { cpu: 500m, memory: 256Mi }
+      volumes:
+        - name: init
+          configMap: { name: da-db-init }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: da-db
+  namespace: tenant-a-runtime
+spec:
+  selector: { app: da-db }
+  ports:
+    - port: 5432
+      targetPort: 5432

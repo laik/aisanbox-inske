@@ -1,0 +1,142 @@
+# 四条挂载（Gatekeeper Assign 数组 upsert，机制见 ../vault/README.md）：
+#   /vault/da-secrets  RO  Vault 渲染的管理密码（复用 agent-secrets-pvc）
+#   /etc/da-config     RO  ConfigMap 临时配置（/etc 在策略基线内）
+#   /etc/da-secret     RO  K8s Secret 静态报表 token（/etc 基线内）
+#   /data/output       RW  共享输出 PVC（/data 不在基线，policy 显式放行）
+# 匹配 ns + workload label，与 vault demo 的 Assign 叠加生效。
+---
+apiVersion: mutations.gatekeeper.sh/v1
+kind: Assign
+metadata: { name: da-vol-secrets }
+spec:
+  applyTo: [{ groups: [""], kinds: ["Pod"], versions: ["v1"] }]
+  match:
+    scope: Namespaced
+    kinds: [{ apiGroups: [""], kinds: ["Pod"] }]
+    namespaces: ["tenant-a-runtime"]
+    labelSelector:
+      matchLabels: { openshell.ai/boundary-role: workload }
+  location: "spec.volumes[name:da-secrets]"
+  parameters:
+    assign:
+      value:
+        name: da-secrets
+        persistentVolumeClaim: { claimName: agent-secrets-pvc, readOnly: true }
+---
+apiVersion: mutations.gatekeeper.sh/v1
+kind: Assign
+metadata: { name: da-mount-secrets }
+spec:
+  applyTo: [{ groups: [""], kinds: ["Pod"], versions: ["v1"] }]
+  match:
+    scope: Namespaced
+    kinds: [{ apiGroups: [""], kinds: ["Pod"] }]
+    namespaces: ["tenant-a-runtime"]
+    labelSelector:
+      matchLabels: { openshell.ai/boundary-role: workload }
+  location: "spec.containers[name:agent].volumeMounts[name:da-secrets]"
+  parameters:
+    assign:
+      value: { name: da-secrets, mountPath: /vault/da-secrets, readOnly: true }
+---
+apiVersion: mutations.gatekeeper.sh/v1
+kind: Assign
+metadata: { name: da-vol-config }
+spec:
+  applyTo: [{ groups: [""], kinds: ["Pod"], versions: ["v1"] }]
+  match:
+    scope: Namespaced
+    kinds: [{ apiGroups: [""], kinds: ["Pod"] }]
+    namespaces: ["tenant-a-runtime"]
+    labelSelector:
+      matchLabels: { openshell.ai/boundary-role: workload }
+  location: "spec.volumes[name:da-config]"
+  parameters:
+    assign:
+      value:
+        name: da-config
+        configMap: { name: da-config }
+---
+apiVersion: mutations.gatekeeper.sh/v1
+kind: Assign
+metadata: { name: da-mount-config }
+spec:
+  applyTo: [{ groups: [""], kinds: ["Pod"], versions: ["v1"] }]
+  match:
+    scope: Namespaced
+    kinds: [{ apiGroups: [""], kinds: ["Pod"] }]
+    namespaces: ["tenant-a-runtime"]
+    labelSelector:
+      matchLabels: { openshell.ai/boundary-role: workload }
+  location: "spec.containers[name:agent].volumeMounts[name:da-config]"
+  parameters:
+    assign:
+      value: { name: da-config, mountPath: /etc/da-config, readOnly: true }
+---
+apiVersion: mutations.gatekeeper.sh/v1
+kind: Assign
+metadata: { name: da-vol-report }
+spec:
+  applyTo: [{ groups: [""], kinds: ["Pod"], versions: ["v1"] }]
+  match:
+    scope: Namespaced
+    kinds: [{ apiGroups: [""], kinds: ["Pod"] }]
+    namespaces: ["tenant-a-runtime"]
+    labelSelector:
+      matchLabels: { openshell.ai/boundary-role: workload }
+  location: "spec.volumes[name:da-report]"
+  parameters:
+    assign:
+      value:
+        name: da-report
+        secret: { secretName: da-report-token }
+---
+apiVersion: mutations.gatekeeper.sh/v1
+kind: Assign
+metadata: { name: da-mount-report }
+spec:
+  applyTo: [{ groups: [""], kinds: ["Pod"], versions: ["v1"] }]
+  match:
+    scope: Namespaced
+    kinds: [{ apiGroups: [""], kinds: ["Pod"] }]
+    namespaces: ["tenant-a-runtime"]
+    labelSelector:
+      matchLabels: { openshell.ai/boundary-role: workload }
+  location: "spec.containers[name:agent].volumeMounts[name:da-report]"
+  parameters:
+    assign:
+      value: { name: da-report, mountPath: /etc/da-secret, readOnly: true }
+---
+apiVersion: mutations.gatekeeper.sh/v1
+kind: Assign
+metadata: { name: da-vol-output }
+spec:
+  applyTo: [{ groups: [""], kinds: ["Pod"], versions: ["v1"] }]
+  match:
+    scope: Namespaced
+    kinds: [{ apiGroups: [""], kinds: ["Pod"] }]
+    namespaces: ["tenant-a-runtime"]
+    labelSelector:
+      matchLabels: { openshell.ai/boundary-role: workload }
+  location: "spec.volumes[name:da-output]"
+  parameters:
+    assign:
+      value:
+        name: da-output
+        persistentVolumeClaim: { claimName: da-output }
+---
+apiVersion: mutations.gatekeeper.sh/v1
+kind: Assign
+metadata: { name: da-mount-output }
+spec:
+  applyTo: [{ groups: [""], kinds: ["Pod"], versions: ["v1"] }]
+  match:
+    scope: Namespaced
+    kinds: [{ apiGroups: [""], kinds: ["Pod"] }]
+    namespaces: ["tenant-a-runtime"]
+    labelSelector:
+      matchLabels: { openshell.ai/boundary-role: workload }
+  location: "spec.containers[name:agent].volumeMounts[name:da-output]"
+  parameters:
+    assign:
+      value: { name: da-output, mountPath: /data/output }
