@@ -1,0 +1,86 @@
+# ⚠ 负面结果记录（2026-11-18 实测，最终方案未采用 Kyverno，勿直接 apply）：
+# Kyverno 1.20 新 CEL API 两条路都走不通：
+#  - ApplyConfiguration 写不了 atomic list（projected.sources 被 SSA 拒绝）；
+#  - JSONPatch 的 CEL 类型把 value 钉成 string，加不了 volume 对象
+#    （dyn() 包装也过不了类型检查）。
+# 注解注入本身可行，但 OpenShell 0.1.7 根本不允许 workload 持投影 SA token
+# （见 100-renderer.yaml），injector 进不了 sandbox，注解没有用武之地。
+# 最终 glue 全部用 Gatekeeper Assign（90 的卷方案被否后，剩 110 的 PVC +
+# /tmp/cm-mount-test 的 ConfigMap，见 README）。Kyverno 留在集群里无策略。
+# 以下为当时验证注解注入可用的存档（普通 Pod 上成立）。
+#
+# 实测版本链（2026-11-18）：
+#  - helm chart kyverno-3.6.x / Kyverno v1.20：**已移除** legacy
+#    kyverno.io/v1 ClusterPolicy 的创建（API 只读保留），必须用新 CEL API。
+#  - Gatekeeper 3.23 Assign 拒绝带点/斜杠的注解键 location（见 50 文件头），
+#    所以注解注入走 Kyverno；JSONPatch 同时解决 configmap volume append。
+#
+# 顺序保证：mutating webhook 按配置名字典序调用，kyverno 系 < vault-agent-
+# injector-cfg，vault injector 能看到这里补上的注解。
+#
+# 匹配条件用实测 label：openshell.ai/boundary-role=workload
+# （supervisor Pod 是 supervisor，不会被注入）。
+# 租户级策略：namespace 写死 tenant-a-runtime；多租户由平台按租户生成，
+# role/KV 路径与 Vault policy 一一对应。
+#
+# 关键实测坑（2026-11-18）：OpenShell workload Pod 设了
+# automountServiceAccountToken=false（不给 agent K8s API token），而
+# vault-k8s 2.0.4 injector 找不到 SA token 挂载会 **明确拒绝** Pod：
+#   "error creating new agent sidecar: failed to find service account volume mount"
+# 注意 webhook failurePolicy=Ignore 不救这个 —— Ignore 只忽略调用失败，
+# 不忽略显式 denied。agent-sandbox controller 反复建 Pod 反复被拒，
+# 表象是 gateway "timed out waiting for gated workload Pod"。
+#
+# 解法演进（都实测过）：
+#  a) 补 audience=vault 的投影 SA token 卷挂回标准路径 —— 被 Kyverno 拒绝：
+#     "may not mutate atomic arrays ... .spec.volumes[].projected.sources"
+#     （projected.sources 在 SSA schema 里是 atomic list，ApplyConfiguration
+#     不能写；要做只能 JSONPatch/自建 webhook，POC 不值得）。
+#  b) 本方案：automountServiceAccountToken 翻回 true，让 kubelet 挂标准
+#     kube-api-access token（aud=API server 默认值），injector 即满足。
+#     安全代价：agent 容器里有一个 API audience 的 SA token。实测
+#     os-a-openshell-sandbox **没有任何 RBAC 绑定**，token 对 API 无权限。
+#     ⚠ 生产硬化：一旦平台给这个 SA 授了 RBAC，必须改回 audience=vault
+#     投影方案（JSONPatch 或自建 webhook），否则 agent 可拿 token 调 API。
+#     role 的 audience 同步钉 API 默认值（10-vault-config.sh）。
+apiVersion: policies.kyverno.io/v1
+kind: MutatingPolicy
+metadata:
+  name: tenant-a-agent-inject
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["pods"]
+  matchConditions:
+    - name: tenant-a-workload-pods
+      expression: >-
+        object.metadata.namespace == "tenant-a-runtime" &&
+        has(object.metadata.labels) &&
+        "openshell.ai/boundary-role" in object.metadata.labels &&
+        object.metadata.labels["openshell.ai/boundary-role"] == "workload"
+  # 实测：JSONPatch 的 CEL 类型检查对混合 value 类型（string/bool/map）
+  # 反复报错（"expected list" / "expected string but found dyn"）。
+  # ApplyConfiguration 走 structured-merge-diff：volumes 按 name、containers
+  # 按 name、volumeMounts 按 mountPath 合并 —— 只增不改，天然保住 OpenShell
+  # 原有的 6 个 volume 和 agent 容器已有挂载，比 JSONPatch 数组 append 更稳。
+  mutations:
+    - patchType: ApplyConfiguration
+      applyConfiguration:
+        expression: |
+          Object{
+            metadata: Object.metadata{
+              annotations: {
+                "vault.hashicorp.com/agent-inject": "true",
+                "vault.hashicorp.com/role": "tenant-a-agent",
+                "vault.hashicorp.com/agent-pre-populate-only": "true",
+                "vault.hashicorp.com/agent-inject-secret-database-url": "secret/data/tenant-a/database",
+                "vault.hashicorp.com/agent-inject-template-database-url": "{{- with secret \"secret/data/tenant-a/database\" -}}\n{{ .Data.data.url }}\n{{- end -}}",
+                "vault.hashicorp.com/agent-inject-secret-api-token": "secret/data/tenant-a/api",
+                "vault.hashicorp.com/agent-inject-template-api-token": "{{- with secret \"secret/data/tenant-a/api\" -}}\n{{ .Data.data.token }}\n{{- end -}}"
+              }
+            }
+          }

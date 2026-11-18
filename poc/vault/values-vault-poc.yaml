@@ -1,0 +1,22 @@
+# HashiCorp Vault — POC 验证用（kind-agent-runtime-poc @ 192.168.5.190）
+#
+# 刻意选择 dev 模式：自动 unseal、内存存储、固定 root token，方便反复重跑。
+# 代价：Pod 重建后 KV 数据全丢（与 Keycloak dev-file 同一个坑，见 usage/04 §7.1）。
+# 生产形态（TLS + file/raft 存储 + auto-unseal）不在本 POC 范围，见
+# openshell4/production/ 的既有约定。
+server:
+  dev:
+    enabled: true
+    devRootToken: "poc-root-token"   # 仅 demo 环境；不是真实凭据
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits:   { cpu: 500m, memory: 256Mi }
+
+injector:
+  enabled: true
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits:   { cpu: 200m, memory: 128Mi }
+
+ui:
+  enabled: false

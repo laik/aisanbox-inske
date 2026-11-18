@@ -1,0 +1,69 @@
+# 分工（实测逼出来的）：
+#  - Kyverno 1.20 新 CEL API：ApplyConfiguration 写不了 atomic list
+#    （projected.sources），JSONPatch 的 value 被类型系统钉死成 string，
+#    加不了 volume 对象 → 只负责注解（map，非 atomic）。
+#  - Gatekeeper Assign：location 解析器拒绝带点/斜杠的注解键，但数组
+#    upsert（spec.volumes[name:...]）能过校验，value 是任意 JSON →
+#    负责补 SA token 卷 + 挂载。
+#  - vault injector 最后跑（字典序 g < k < v），看到注解 + SA 挂载即注入。
+#
+# 为什么需要这个卷：OpenShell workload automount=false，injector 找不到
+# SA token 挂载会显式拒绝 Pod。kube-api-access（automount=true 产物）含
+# configMap 引用，被 OpenShell resource admission 判为 unsupported
+# external resource attachment。这里只投影 serviceAccountToken 一项
+# （无 configMap/downwardAPI 引用），audience 钉 API 默认值与 Vault role 一致。
+# 实测 verdict（2026-11-18）：不放行。gateway 明确拒绝：
+# "workload Pod must not receive a projected ServiceAccount token"。
+# 纯 SA token 投影（无 configMap 引用）也一样被拒 —— 这是不变量，不是
+# 引用类型问题。本文件存档为证，勿 apply。最终方案见 100/110。
+---
+apiVersion: mutations.gatekeeper.sh/v1
+kind: Assign
+metadata:
+  name: vault-sa-token-volume
+spec:
+  applyTo:
+    - groups: [""]
+      kinds: ["Pod"]
+      versions: ["v1"]
+  match:
+    scope: Namespaced
+    kinds: [{ apiGroups: [""], kinds: ["Pod"] }]
+    namespaces: ["tenant-a-runtime"]
+    labelSelector:
+      matchLabels: { openshell.ai/boundary-role: workload }
+  location: "spec.volumes[name:vault-sa-token]"
+  parameters:
+    assign:
+      value:
+        name: vault-sa-token
+        projected:
+          defaultMode: 420
+          sources:
+            - serviceAccountToken:
+                path: token
+                audience: https://kubernetes.default.svc.cluster.local
+                expirationSeconds: 3600
+---
+apiVersion: mutations.gatekeeper.sh/v1
+kind: Assign
+metadata:
+  name: vault-sa-token-mount
+spec:
+  applyTo:
+    - groups: [""]
+      kinds: ["Pod"]
+      versions: ["v1"]
+  match:
+    scope: Namespaced
+    kinds: [{ apiGroups: [""], kinds: ["Pod"] }]
+    namespaces: ["tenant-a-runtime"]
+    labelSelector:
+      matchLabels: { openshell.ai/boundary-role: workload }
+  location: "spec.containers[name:agent].volumeMounts[name:vault-sa-token]"
+  parameters:
+    assign:
+      value:
+        name: vault-sa-token
+        mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+        readOnly: true

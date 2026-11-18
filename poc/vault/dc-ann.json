@@ -1,0 +1,15 @@
+{
+  "kubernetes": {
+    "pod": {
+      "annotations": {
+        "vault.hashicorp.com/agent-inject": "true",
+        "vault.hashicorp.com/role": "tenant-a-agent",
+        "vault.hashicorp.com/agent-pre-populate-only": "true",
+        "vault.hashicorp.com/agent-inject-secret-database-url": "secret/data/tenant-a/database",
+        "vault.hashicorp.com/agent-inject-template-database-url": "{{- with secret \"secret/data/tenant-a/database\" -}}\n{{ .Data.data.url }}\n{{- end -}}",
+        "vault.hashicorp.com/agent-inject-secret-api-token": "secret/data/tenant-a/api",
+        "vault.hashicorp.com/agent-inject-template-api-token": "{{- with secret \"secret/data/tenant-a/api\" -}}\n{{ .Data.data.token }}\n{{- end -}}"
+      }
+    }
+  }
+}

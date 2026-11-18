@@ -1,0 +1,79 @@
+# Vault 密钥 → 沙箱文件的**边界外渲染**方案（0.1.7 实测唯一可行路径）。
+#
+# 为什么不能把 Vault Agent Injector 放进 workload Pod：
+#   OpenShell 0.1.7 gateway 显式拒绝 workload 持有任何投影 SA token
+#   （"must not receive a projected ServiceAccount token"，capability-free
+#   isolation 不变量），而 injector 的 kubernetes auth 必须用 Pod SA token。
+#   两者在 0.1.7 上根本冲突 —— 不是配置问题，是产品边界。
+#
+# 所以：渲染器 Job 在沙箱边界外（普通 Pod，自己的 SA）向 Vault 认证，
+# 把密钥写进带准入标签的 PVC；sandbox 通过 PVC 挂载读文件（POC2 已验证
+# 的受支持附件类型）。sandbox 内没有任何 Vault/K8s 凭据。
+#
+# 轮转：重跑 Job 即重写文件；目录挂载（非 subPath）会传播到运行中的 sandbox。
+# 生产形态：把 Job 换成控制器（watch Vault 租约 / 定时），或评估
+# secrets-store-csi-driver + vault provider（CSI 由节点驱动代取 token，
+# Pod 内不落 token —— 但 CSI 卷是否过 0.1.7 admission 未验证）。
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vault-renderer
+  namespace: tenant-a-runtime
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: agent-secrets-pvc
+  namespace: tenant-a-runtime
+  labels:
+    openshell.ai/sandbox-attachable: "true"
+    example.com/workspace: poc-shared
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: rwx-shared
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: vault-render
+  namespace: tenant-a-runtime
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      serviceAccountName: vault-renderer
+      restartPolicy: Never
+      containers:
+        - name: render
+          image: hashicorp/vault:2.0.4   # 节点上已有（injector 用同款）
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              export VAULT_ADDR=http://vault.vault.svc:8200
+              T=$(vault write -field=token auth/kubernetes/login \
+                    role=tenant-a-renderer \
+                    jwt="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)")
+              export VAULT_TOKEN="$T"
+              # 先删后写：上一轮 chmod 0444 的文件不可覆盖（实测重跑坑），
+              # 目录可写即可 unlink。
+              rm -f /secrets-out/database-url /secrets-out/api-token
+              vault kv get -field=url   secret/tenant-a/database > /secrets-out/database-url
+              vault kv get -field=token secret/tenant-a/api      > /secrets-out/api-token
+              chmod 0444 /secrets-out/database-url /secrets-out/api-token
+              echo "rendered:"; ls -la /secrets-out/
+          volumeMounts:
+            - name: secrets-out
+              mountPath: /secrets-out
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits:   { cpu: 200m, memory: 128Mi }
+      volumes:
+        - name: secrets-out
+          persistentVolumeClaim:
+            claimName: agent-secrets-pvc

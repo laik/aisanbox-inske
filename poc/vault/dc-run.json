@@ -1,0 +1,14 @@
+{
+  "kubernetes": {
+    "volumes": [
+      { "name": "agent-config", "config_map": { "name": "agent-config" } }
+    ],
+    "containers": {
+      "agent": {
+        "volume_mounts": [
+          { "name": "agent-config", "mount_path": "/run/agent-config", "read_only": true }
+        ]
+      }
+    }
+  }
+}

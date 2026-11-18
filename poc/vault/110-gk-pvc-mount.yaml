@@ -1,0 +1,51 @@
+# 把渲染好的 PVC 挂进 workload（Gatekeeper Assign 数组 upsert，实测可用）。
+# PVC 带准入标签（100-renderer.yaml），过 OpenShell resource admission。
+# 挂 /vault/secrets：与 injector 默认路径一致，sandbox policy 放行同一条。
+# 不用 subPath —— 目录挂载才能让轮转后的文件传播进运行中的 sandbox。
+---
+apiVersion: mutations.gatekeeper.sh/v1
+kind: Assign
+metadata:
+  name: pvc-volume-agent-secrets
+spec:
+  applyTo:
+    - groups: [""]
+      kinds: ["Pod"]
+      versions: ["v1"]
+  match:
+    scope: Namespaced
+    kinds: [{ apiGroups: [""], kinds: ["Pod"] }]
+    namespaces: ["tenant-a-runtime"]
+    labelSelector:
+      matchLabels: { openshell.ai/boundary-role: workload }
+  location: "spec.volumes[name:agent-secrets]"
+  parameters:
+    assign:
+      value:
+        name: agent-secrets
+        persistentVolumeClaim:
+          claimName: agent-secrets-pvc
+          readOnly: true
+---
+apiVersion: mutations.gatekeeper.sh/v1
+kind: Assign
+metadata:
+  name: pvc-mount-agent-secrets
+spec:
+  applyTo:
+    - groups: [""]
+      kinds: ["Pod"]
+      versions: ["v1"]
+  match:
+    scope: Namespaced
+    kinds: [{ apiGroups: [""], kinds: ["Pod"] }]
+    namespaces: ["tenant-a-runtime"]
+    labelSelector:
+      matchLabels: { openshell.ai/boundary-role: workload }
+  location: "spec.containers[name:agent].volumeMounts[name:agent-secrets]"
+  parameters:
+    assign:
+      value:
+        name: agent-secrets
+        mountPath: /vault/secrets
+        readOnly: true

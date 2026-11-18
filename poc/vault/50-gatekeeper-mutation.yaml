@@ -1,0 +1,208 @@
+# ⚠ 负面结果记录（2026-11-18 实测，勿直接 apply）：
+# Gatekeeper 3.23 的 Assign 校验 webhook 拒绝所有带点/斜杠的注解键 location：
+#   invalid location format metadata.annotations["vault.hashicorp.com/..."]:
+#   expected ':' following keyField ... got RBRACKET
+# 7 条注解 Assign 全部建不出来；只有 spec.volumes[name:...] 两条数组 upsert
+# 能过校验。最终方案改用 Kyverno（60-kyverno-policy.yaml），一个引擎同时
+# 处理注解与 configmap 挂载。本文件保留作为能力边界证据。
+#
+# 原设计意图：0.1.7 driver-config 实测拒绝 annotations / config_map / secret
+# （40-driver-config-experiments.sh E1-E3），所以由 mutation 在 Pod 准入时补。
+# 匹配条件用实测 label：openshell.ai/boundary-role=workload
+# （supervisor Pod 是 boundary-role=supervisor，不会被注入）。
+#
+# 顺序保证：mutating webhook 按配置名字典序调用，
+# gatekeeper-mutating-webhook-configuration < vault-agent-injector-cfg，
+# 所以 vault injector 能看到这里补上的注解。
+#
+# 生产注意：这是租户级策略（namespace 写死 tenant-a-runtime）。
+# 多租户开通时应由平台按租户生成，role/路径与 Vault policy 一一对应。
+---
+apiVersion: mutations.gatekeeper.sh/v1
+kind: Assign
+metadata:
+  name: vault-ann-inject
+spec:
+  applyTo:
+    - groups: [""]
+      kinds: ["Pod"]
+      versions: ["v1"]
+  match:
+    scope: Namespaced
+    kinds: [{ apiGroups: [""], kinds: ["Pod"] }]
+    namespaces: ["tenant-a-runtime"]
+    labelSelector:
+      matchLabels: { openshell.ai/boundary-role: workload }
+  location: 'metadata.annotations["vault.hashicorp.com/agent-inject"]'
+  parameters:
+    assign: { value: "true" }
+---
+apiVersion: mutations.gatekeeper.sh/v1
+kind: Assign
+metadata:
+  name: vault-ann-role
+spec:
+  applyTo:
+    - groups: [""]
+      kinds: ["Pod"]
+      versions: ["v1"]
+  match:
+    scope: Namespaced
+    kinds: [{ apiGroups: [""], kinds: ["Pod"] }]
+    namespaces: ["tenant-a-runtime"]
+    labelSelector:
+      matchLabels: { openshell.ai/boundary-role: workload }
+  location: 'metadata.annotations["vault.hashicorp.com/role"]'
+  parameters:
+    assign: { value: "tenant-a-agent" }
+---
+apiVersion: mutations.gatekeeper.sh/v1
+kind: Assign
+metadata:
+  name: vault-ann-prepopulate
+spec:
+  applyTo:
+    - groups: [""]
+      kinds: ["Pod"]
+      versions: ["v1"]
+  match:
+    scope: Namespaced
+    kinds: [{ apiGroups: [""], kinds: ["Pod"] }]
+    namespaces: ["tenant-a-runtime"]
+    labelSelector:
+      matchLabels: { openshell.ai/boundary-role: workload }
+  location: 'metadata.annotations["vault.hashicorp.com/agent-pre-populate-only"]'
+  parameters:
+    assign: { value: "true" }
+---
+apiVersion: mutations.gatekeeper.sh/v1
+kind: Assign
+metadata:
+  name: vault-ann-secret-db
+spec:
+  applyTo:
+    - groups: [""]
+      kinds: ["Pod"]
+      versions: ["v1"]
+  match:
+    scope: Namespaced
+    kinds: [{ apiGroups: [""], kinds: ["Pod"] }]
+    namespaces: ["tenant-a-runtime"]
+    labelSelector:
+      matchLabels: { openshell.ai/boundary-role: workload }
+  location: 'metadata.annotations["vault.hashicorp.com/agent-inject-secret-database-url"]'
+  parameters:
+    assign: { value: "secret/data/tenant-a/database" }
+---
+apiVersion: mutations.gatekeeper.sh/v1
+kind: Assign
+metadata:
+  name: vault-ann-template-db
+spec:
+  applyTo:
+    - groups: [""]
+      kinds: ["Pod"]
+      versions: ["v1"]
+  match:
+    scope: Namespaced
+    kinds: [{ apiGroups: [""], kinds: ["Pod"] }]
+    namespaces: ["tenant-a-runtime"]
+    labelSelector:
+      matchLabels: { openshell.ai/boundary-role: workload }
+  location: 'metadata.annotations["vault.hashicorp.com/agent-inject-template-database-url"]'
+  parameters:
+    assign:
+      value: |
+        {{- with secret "secret/data/tenant-a/database" -}}
+        {{ .Data.data.url }}
+        {{- end -}}
+---
+apiVersion: mutations.gatekeeper.sh/v1
+kind: Assign
+metadata:
+  name: vault-ann-secret-api
+spec:
+  applyTo:
+    - groups: [""]
+      kinds: ["Pod"]
+      versions: ["v1"]
+  match:
+    scope: Namespaced
+    kinds: [{ apiGroups: [""], kinds: ["Pod"] }]
+    namespaces: ["tenant-a-runtime"]
+    labelSelector:
+      matchLabels: { openshell.ai/boundary-role: workload }
+  location: 'metadata.annotations["vault.hashicorp.com/agent-inject-secret-api-token"]'
+  parameters:
+    assign: { value: "secret/data/tenant-a/api" }
+---
+apiVersion: mutations.gatekeeper.sh/v1
+kind: Assign
+metadata:
+  name: vault-ann-template-api
+spec:
+  applyTo:
+    - groups: [""]
+      kinds: ["Pod"]
+      versions: ["v1"]
+  match:
+    scope: Namespaced
+    kinds: [{ apiGroups: [""], kinds: ["Pod"] }]
+    namespaces: ["tenant-a-runtime"]
+    labelSelector:
+      matchLabels: { openshell.ai/boundary-role: workload }
+  location: 'metadata.annotations["vault.hashicorp.com/agent-inject-template-api-token"]'
+  parameters:
+    assign:
+      value: |
+        {{- with secret "secret/data/tenant-a/api" -}}
+        {{ .Data.data.token }}
+        {{- end -}}
+---
+# ConfigMap：driver-config 不支持 config_map volume（E1 实测），
+# 用 Assign 的数组 upsert 语义补 volume + mount。
+apiVersion: mutations.gatekeeper.sh/v1
+kind: Assign
+metadata:
+  name: cm-volume-agent-config
+spec:
+  applyTo:
+    - groups: [""]
+      kinds: ["Pod"]
+      versions: ["v1"]
+  match:
+    scope: Namespaced
+    kinds: [{ apiGroups: [""], kinds: ["Pod"] }]
+    namespaces: ["tenant-a-runtime"]
+    labelSelector:
+      matchLabels: { openshell.ai/boundary-role: workload }
+  location: "spec.volumes[name:agent-config]"
+  parameters:
+    assign:
+      value:
+        name: agent-config
+        configMap:
+          name: agent-config
+---
+apiVersion: mutations.gatekeeper.sh/v1
+kind: Assign
+metadata:
+  name: cm-mount-agent-config
+spec:
+  applyTo:
+    - groups: [""]
+      kinds: ["Pod"]
+      versions: ["v1"]
+  match:
+    scope: Namespaced
+    kinds: [{ apiGroups: [""], kinds: ["Pod"] }]
+    namespaces: ["tenant-a-runtime"]
+    labelSelector:
+      matchLabels: { openshell.ai/boundary-role: workload }
+  location: "spec.containers[name:agent].volumeMounts[name:agent-config]"
+  parameters:
+    assign:
+      value:
+        name: agent-config
+        mountPath: /etc/agent-config
+        readOnly: true

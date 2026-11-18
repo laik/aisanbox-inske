@@ -1,0 +1,45 @@
+apiVersion: mutations.gatekeeper.sh/v1
+kind: Assign
+metadata:
+  name: ksec-volume-static
+spec:
+  applyTo:
+    - groups: [""]
+      kinds: ["Pod"]
+      versions: ["v1"]
+  match:
+    scope: Namespaced
+    kinds: [{ apiGroups: [""], kinds: ["Pod"] }]
+    namespaces: ["tenant-a-runtime"]
+    labelSelector:
+      matchLabels: { openshell.ai/boundary-role: workload }
+  location: "spec.volumes[name:static-secrets]"
+  parameters:
+    assign:
+      value:
+        name: static-secrets
+        secret:
+          secretName: agent-secrets
+---
+apiVersion: mutations.gatekeeper.sh/v1
+kind: Assign
+metadata:
+  name: ksec-mount-static
+spec:
+  applyTo:
+    - groups: [""]
+      kinds: ["Pod"]
+      versions: ["v1"]
+  match:
+    scope: Namespaced
+    kinds: [{ apiGroups: [""], kinds: ["Pod"] }]
+    namespaces: ["tenant-a-runtime"]
+    labelSelector:
+      matchLabels: { openshell.ai/boundary-role: workload }
+  location: "spec.containers[name:agent].volumeMounts[name:static-secrets]"
+  parameters:
+    assign:
+      value:
+        name: static-secrets
+        mountPath: /etc/agent-secrets
+        readOnly: true

@@ -1,0 +1,50 @@
+# ConfigMap 直挂（实测可行，E10）：ConfigMap 打准入标签
+# （30-configmap-secret.yaml），Gatekeeper Assign 数组 upsert 补卷 + 挂载。
+# /etc 在 OpenShell 策略基线（RO）里，无需改 sandbox policy。
+# 注意：driver-config 不接受 config_map 卷（E1），只能走准入 mutation。
+---
+apiVersion: mutations.gatekeeper.sh/v1
+kind: Assign
+metadata:
+  name: cm-volume-agent-config
+spec:
+  applyTo:
+    - groups: [""]
+      kinds: ["Pod"]
+      versions: ["v1"]
+  match:
+    scope: Namespaced
+    kinds: [{ apiGroups: [""], kinds: ["Pod"] }]
+    namespaces: ["tenant-a-runtime"]
+    labelSelector:
+      matchLabels: { openshell.ai/boundary-role: workload }
+  location: "spec.volumes[name:agent-config]"
+  parameters:
+    assign:
+      value:
+        name: agent-config
+        configMap:
+          name: agent-config
+---
+apiVersion: mutations.gatekeeper.sh/v1
+kind: Assign
+metadata:
+  name: cm-mount-agent-config
+spec:
+  applyTo:
+    - groups: [""]
+      kinds: ["Pod"]
+      versions: ["v1"]
+  match:
+    scope: Namespaced
+    kinds: [{ apiGroups: [""], kinds: ["Pod"] }]
+    namespaces: ["tenant-a-runtime"]
+    labelSelector:
+      matchLabels: { openshell.ai/boundary-role: workload }
+  location: "spec.containers[name:agent].volumeMounts[name:agent-config]"
+  parameters:
+    assign:
+      value:
+        name: agent-config
+        mountPath: /etc/agent-config
+        readOnly: true

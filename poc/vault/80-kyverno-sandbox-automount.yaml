@@ -1,0 +1,42 @@
+# ⚠ 负面结果（2026-11-18 实测，勿 apply）：改 Sandbox CR 让 automount=true
+# 确实能让 SA 插件挂上 kube-api-access，但 OpenShell gateway 随即拒绝：
+# "unsupported external resource attachment" —— 0.1.7 不允许 workload 有
+# 任何投影 SA token（capability-free isolation）。此路不通，存档为证。
+# 原分析：在 Pod 上把 automount 翻 true 太晚了 ——
+# kube-api-access 卷由 API server 内置 ServiceAccount admission 插件添加，
+# 它跑在 mutating webhook **之前**，看到的还是 OpenShell 写的 false。
+# 结果：Pod automount=true 但没有 SA 卷，vault injector 依旧拒绝。
+#
+# 正解：往上改一层。OpenShell driver 把 automount=false 写进 Sandbox CR
+# （agents.x-k8s.io/v1beta1）的 podTemplate，agent-sandbox controller 照单
+# 渲染 Pod。在 Sandbox CR CREATE 时改成 true，SA 插件就会正常挂 token。
+# bool 字段，SSA 无 atomic 问题。
+apiVersion: policies.kyverno.io/v1
+kind: MutatingPolicy
+metadata:
+  name: tenant-a-sandbox-automount
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["agents.x-k8s.io"]
+        apiVersions: ["v1beta1"]
+        operations: ["CREATE"]
+        resources: ["sandboxes"]
+  matchConditions:
+    - name: tenant-a-ns
+      expression: >-
+        object.metadata.namespace == "tenant-a-runtime"
+  mutations:
+    - patchType: ApplyConfiguration
+      applyConfiguration:
+        expression: |
+          Object{
+            spec: Object.spec{
+              podTemplate: Object.spec.podTemplate{
+                spec: Object.spec.podTemplate.spec{
+                  automountServiceAccountToken: true
+                }
+              }
+            }
+          }

@@ -1,0 +1,14 @@
+{
+  "kubernetes": {
+    "volumes": [
+      { "name": "agent-secrets", "secret": { "secret_name": "agent-secrets" } }
+    ],
+    "containers": {
+      "agent": {
+        "volume_mounts": [
+          { "name": "agent-secrets", "mount_path": "/etc/agent-secrets", "read_only": true }
+        ]
+      }
+    }
+  }
+}
