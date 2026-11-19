@@ -1,0 +1,44 @@
+# rm-guard 检测策略（观测，不强制 —— 强制由 responder 调 openshell CLI 完成）。
+# 不用 lsmhooks：该宿主 LSM 列表无 bpf（见 ../tetragon/values.yaml）。
+#
+# 两条 kprobe：
+#   1) sys_execve 命中 rm 二进制 —— 早期预警。argv 不在这里匹配（kprobe 的
+#      argv 解析跨版本不稳），事件自带 process.arguments（进程缓存），
+#      responder 按 "-rf" + "/sandbox/canary" 精确判定。
+#   2) sys_unlinkat 路径 Prefix /sandbox/canary —— 逐文件见证。
+#      已知边界：GNU rm 递归删除用 dirfd+相对路径，Prefix 只能命中绝对路径
+#      调用（顶层/单文件）。demo 用绝对路径攻击；相对路径变体见 README 实测。
+#
+# podSelector 是租户级（平台一条策略看住所有 workload）；canary 路径只有
+# demo sandbox 有，responder 再按 pod 名精确过滤，无误报。
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: rm-guard
+  labels: {aisanbox.io/pack: rm-guard}
+spec:
+  podSelector:
+    matchLabels:
+      openshell.ai/boundary-role: workload
+      projectcapsule.dev/tenant: tenant-a
+  kprobes:
+    - call: "sys_execve"
+      syscall: true
+      message: "rmguard:rm-exec"
+      args: [{index: 0, type: string}]
+      selectors:
+        - matchArgs:
+            - index: 0
+              operator: Equal
+              values: ["/usr/bin/rm", "/bin/rm"]
+      tags: ["rmguard", "destructive", "early-warning"]
+    - call: "sys_unlinkat"
+      syscall: true
+      message: "rmguard:file-delete"
+      args: [{index: 1, type: string}]
+      selectors:
+        - matchArgs:
+            - index: 1
+              operator: Prefix
+              values: ["/sandbox/canary"]
+      tags: ["rmguard", "destructive"]

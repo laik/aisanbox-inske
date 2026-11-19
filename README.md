@@ -638,6 +638,7 @@ No such file or directory` 上失败。恢复办法就是它自己的取法：
 - OTLP 接入点：Collector `observability/otel-collector:4317`(gRPC) / `:4318`(HTTP)
 - POC3 Gateway（OIDC）：`https://172.22.0.3:31444`；Keycloak：`https://172.22.0.3:31443`
 - 查询手册：[`poc/usage/02-agent-visibility.md`](poc/usage/02-agent-visibility.md)
+- Workspace 手工 demo（对标 NVIDIA `how-it-works/workspaces`）：[`poc/usage/04-workspace-demo.md`](poc/usage/04-workspace-demo.md)
 
 ---
 
@@ -666,7 +667,7 @@ poc/
 ├── storage/       RWX PVC、探针、workspace PVC（含批准标签）
 ├── tetragon/      观测与强制策略
 ├── scripts/       gh-fetch.sh（绕开 release asset 超时）· bootstrap.sh
-├── usage/         开通脚本 · Tetragon 查询手册 · 第一轮演示脚本
+├── usage/         开通脚本 · Tetragon 查询手册 · 第一轮演示脚本 · Workspace 手工 demo（04）
 └── docs/          POC2-CONCLUSIONS.md（逐条原始输出）· FINDINGS.md（第一轮证据附录）
 ```
 

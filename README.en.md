@@ -681,6 +681,7 @@ and renames it into place, so a bash that is already executing keeps holding the
 - OTLP endpoints: collector `observability/otel-collector:4317` (gRPC) / `:4318` (HTTP)
 - POC3 Gateway (OIDC): `https://172.22.0.3:31444`; Keycloak: `https://172.22.0.3:31443`
 - Query handbook: [`poc/usage/02-agent-visibility.md`](poc/usage/02-agent-visibility.md)
+- Manual Workspace demo (mirrors NVIDIA `how-it-works/workspaces`): [`poc/usage/04-workspace-demo.md`](poc/usage/04-workspace-demo.md)
 
 ---
 
@@ -709,7 +710,7 @@ poc/
 ├── storage/       RWX PVC, probes, workspace PVC (with approval labels)
 ├── tetragon/      observation and enforcement policies
 ├── scripts/       gh-fetch.sh (works around release-asset timeouts) · bootstrap.sh
-├── usage/         provisioning script · Tetragon query handbook · round-1 demo script
+├── usage/         provisioning script · Tetragon query handbook · round-1 demo script · manual Workspace demo (04)
 └── docs/          POC2-CONCLUSIONS.md (verbatim evidence) · FINDINGS.md (round-1 evidence appendix)
 ```
 

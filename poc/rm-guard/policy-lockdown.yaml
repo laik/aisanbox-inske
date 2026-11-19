@@ -1,0 +1,30 @@
+# rm-guard 拒绝策略 —— 由 responder 以 **gateway 全局锁** 形式推送：
+#   openshell policy set --global --policy policy-lockdown.yaml --yes
+#
+# 0.1.7 实测的强制边界（README 有完整矩阵）：
+#   1) sandbox 级 `policy set` 是**只增不减**的：read_write 路径不能在
+#      live sandbox 上移除（Stopped 也不行，报 "cannot be removed on a
+#      live sandbox"）；include_workdir 也不能改。
+#   2) FS 权限是实例启动时施加的 landlock，运行中实例**不受**后续策略
+#      变更影响（全局锁也一样）——只有 stop→start 的新实例才按新策略施锁。
+#   3) 全局锁没有 sandbox 级的只增限制，include_workdir: false 可用。
+# 所以"拒绝"的生效路径 = 停掉肇事 sandbox（立即 containment）+ 全局锁
+# （它再起来时就是只读）。全局锁影响整个 gateway 的 sandbox 的**下次启动**，
+# 运行中的其它 sandbox 不受影响；demo 结束用 `policy delete` 解锁。
+version: 1
+filesystem_policy:
+  include_workdir: false
+  read_only:
+    - /bin
+    - /usr
+    - /lib
+    - /proc
+    - /dev/urandom
+    - /etc
+    - /var/log
+    - /sandbox
+    - /tmp
+  read_write:
+    - /dev/null
+landlock:
+  compatibility: best_effort

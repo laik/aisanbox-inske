@@ -1,0 +1,33 @@
+# rm-guard 变体：内核直拒（零删除）—— 与主链（观测→CLI）分开演示。
+# 前提（实测 2026-11-19，宿主 6.8.0-149-generic）：
+#   CONFIG_BPF_KPROBE_OVERRIDE=y，且 __x64_sys_unlinkat 在
+#   /sys/kernel/debug/error_injection/list（ERRNO）→ kprobe Override 可用。
+#   lsm hooks 仍不可用（LSM 列表无 bpf）—— 所以走 kprobe 而非 lsm。
+#   tetragon 需 --disable-kprobe-multi（../tetragon/values.yaml 已配）。
+#
+# 已知边界：GNU rm -rf 递归用 dirfd+相对路径，Prefix 只命中绝对路径调用。
+# 所以本变体的攻击样例是 `rm -f /sandbox/canary/f*`（glob 展开为绝对路径），
+# 200 个文件逐一被 EPERM 拒掉，计数不降。rm -rf 整目录的相对路径删除
+# 不在本策略覆盖内（主链的 execve 预警 + CLI 强制仍然兜底）。
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: rm-guard-enforce
+  labels: {aisanbox.io/pack: rm-guard}
+spec:
+  podSelector:
+    matchLabels:
+      openshell.ai/boundary-role: workload
+      projectcapsule.dev/tenant: tenant-a
+  kprobes:
+    - call: "sys_unlinkat"
+      syscall: true
+      message: "rmguard:delete-denied"
+      args: [{index: 1, type: string}]
+      selectors:
+        - matchArgs:
+            - index: 1
+              operator: Prefix
+              values: ["/sandbox/canary"]
+          matchActions: [{action: Override, argError: -1}]
+      tags: ["rmguard", "enforce"]

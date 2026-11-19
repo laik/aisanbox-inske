@@ -1,0 +1,20 @@
+# rm-guard 初始策略：工作区可写 —— supervisor（带内策略面）会放行 rm -rf。
+# 这就是"批准"的来源：不是审批 UI 点了同意，而是策略明确允许，
+# landlock 照章放行，supervisor 无任何 DENIED。
+version: 1
+filesystem_policy:
+  include_workdir: true
+  read_only:
+    - /bin
+    - /usr
+    - /lib
+    - /proc
+    - /dev/urandom
+    - /etc
+    - /var/log
+  read_write:
+    - /tmp
+    - /dev/null
+    - /sandbox
+landlock:
+  compatibility: best_effort

@@ -1,0 +1,20 @@
+# pod 级逐文件见证：__HASH__ 由 demo.sh 替换为 sandbox pod 的
+# agents.x-k8s.io/sandbox-name-hash 标签值（按 sandbox 名哈希，稳定）。
+# 不带路径 selector —— GNU rm 递归删除走 dirfd+相对路径，租户级策略的
+# Prefix 匹配看不到；本策略只选 demo sandbox 这一个 pod，全量 unlinkat
+# 都是取证对象（实测 200 文件 + 1 顶层目录 = 201 条事件）。
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: rm-guard-files
+  labels: {aisanbox.io/pack: rm-guard}
+spec:
+  podSelector:
+    matchLabels:
+      agents.x-k8s.io/sandbox-name-hash: __HASH__
+  kprobes:
+    - call: "sys_unlinkat"
+      syscall: true
+      message: "rmguard:file-delete"
+      args: [{index: 1, type: string}]
+      tags: ["rmguard", "destructive"]
