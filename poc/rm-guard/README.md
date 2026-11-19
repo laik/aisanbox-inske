@@ -49,8 +49,13 @@ ssh root@192.168.5.190
 #   + 一个 Ready 的正对照 sandbox（默认 v-cm，vault demo 遗留；PC_SB=<name> 可换）
 bash /root/poc2/rm-guard/demo.sh          # 交互，每拍回车（录屏）
 FAST=1 bash /root/poc2/rm-guard/demo.sh   # 连跑回归
-bash /root/poc2/rm-guard/demo.sh --cleanup # 清场（保留 timeline.jsonl/responder.log）
+bash /root/poc2/rm-guard/demo.sh --cleanup # 清场（保留证据文件）
 ```
+
+**每次运行落一份带时间戳的证据报告** `evidence-<UTC>.md`：环境快照 + 逐拍 UTC
+时间戳 + 全部断言 + 原始 supervisor OCSF / Tetragon 事件 / CLI 输出 + 延迟 +
+完整 `timeline.jsonl` 内嵌。样例见 [`evidence-20261119T084410Z.md`](evidence-20261119T084410Z.md)
+（该轮：内核事件→检测 5ms，检测→暂停+拒绝 4.1s，202 条 file-delete，变体零删除）。
 
 ## 十拍内容（全部实跑验证）
 
@@ -116,6 +121,7 @@ bash /root/poc2/rm-guard/demo.sh --cleanup # 清场（保留 timeline.jsonl/resp
 | `tracingpolicy-files.yaml.template` | pod 级逐文件见证（`__HASH__` 由 demo 替换） |
 | `tracingpolicy-enforce.yaml` | 变体：kprobe Override 内核直拒 |
 | `DESIGN.md` | 设计推演（含实测后记） |
+| `evidence-<UTC>.md` | 每次运行的带时间戳证据报告（demo.sh 自动生成） |
 
 ## 实测坑（这次新撞的）
 
