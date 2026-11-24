@@ -1,0 +1,48 @@
+# 反向对照（对齐 poc/vault 的 E7）：把 csi 卷注入到 **Sandbox CR**（而不是 live Pod）。
+# OpenShell 对它自己生成的 Sandbox CR 做闭集清点，volume 源只允许
+# emptyDir / downwardAPI / persistentVolumeClaim / gateway 私有 Secret，
+# 其它一律 `workload contains an unsupported external resource attachment`。
+apiVersion: mutations.gatekeeper.sh/v1
+kind: Assign
+metadata:
+  name: csi-volume-cr
+spec:
+  applyTo:
+    - groups: ["agents.x-k8s.io"]
+      kinds: ["Sandbox"]
+      versions: ["v1beta1"]
+  match:
+    scope: Namespaced
+    kinds: [{ apiGroups: ["agents.x-k8s.io"], kinds: ["Sandbox"] }]
+    namespaces: ["tenant-a-runtime"]
+  location: "spec.podTemplate.spec.volumes[name:vault-cr]"
+  parameters:
+    assign:
+      value:
+        name: vault-cr
+        csi:
+          driver: secrets-store.csi.k8s.io
+          readOnly: true
+          volumeAttributes:
+            secretProviderClass: vault-sandbox
+---
+apiVersion: mutations.gatekeeper.sh/v1
+kind: Assign
+metadata:
+  name: csi-mount-cr
+spec:
+  applyTo:
+    - groups: ["agents.x-k8s.io"]
+      kinds: ["Sandbox"]
+      versions: ["v1beta1"]
+  match:
+    scope: Namespaced
+    kinds: [{ apiGroups: ["agents.x-k8s.io"], kinds: ["Sandbox"] }]
+    namespaces: ["tenant-a-runtime"]
+  location: "spec.podTemplate.spec.containers[name:agent].volumeMounts[name:vault-cr]"
+  parameters:
+    assign:
+      value:
+        name: vault-cr
+        mountPath: /etc/vault-cr
+        readOnly: true

@@ -169,7 +169,9 @@ $C -g poc2-a --workspace poc-shared sandbox exec v-sec -- cat /vault/secrets/dat
   Assign 策略，由平台开通流程生成；namespace/label 选择器按租户替换。
 - **渲染器形态**：POC 用 Job 手动重跑；生产换成控制器（定时 / watch Vault 租约），
   或评估 **secrets-store-csi-driver + vault provider**（CSI 节点驱动代取 token，
-  Pod 内不落 token —— 但 CSI 卷能否过 0.1.7 admission **未验证**）。
+  Pod 内不落 token）—— **已验证**，见 `../vault-csi/README.md`：OpenShell 只接受 PVC，所以 CSI 要藏在
+  「静态 CSI PV + 带批准标签的 PVC」后面（要 `allow_driver_config` 与 CSIDriver 声明 `Persistent`），
+  或由 webhook 在 Pod 准入时补 inline csi 卷；轮转不用重启沙箱（实测 ~25s 传播）。
 - **隔离粒度**：os-a 的所有 sandbox 共用 SA `os-a-openshell-sandbox`（gateway 级），
   所以 Vault role 的绑定粒度是"每租户 gateway"，不是"每 sandbox"。
 - **Vault 形态**：dev 模式仅 POC（内存存储、固定 root token、无 TLS）；生产按

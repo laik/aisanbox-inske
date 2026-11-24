@@ -1,0 +1,209 @@
+{
+  "realm": "aisanbox",
+  "enabled": true,
+  "displayName": "aisanbox POC5 (Keycloak-local users)",
+  "sslRequired": "external",
+  "accessTokenLifespan": 1800,
+  "roles": {
+    "realm": [
+      {
+        "name": "os-user",
+        "description": "OpenShell os-user"
+      },
+      {
+        "name": "os-admin",
+        "description": "OpenShell os-admin"
+      },
+      {
+        "name": "tenant-a-users",
+        "description": "租户侧组，只用于平台 Controller 同步 workspace 成员"
+      },
+      {
+        "name": "tenant-b-users",
+        "description": "租户侧组，只用于平台 Controller 同步 workspace 成员"
+      },
+      {
+        "name": "T-50933-USER",
+        "description": "租户侧组，只用于平台 Controller 同步 workspace 成员"
+      },
+      {
+        "name": "T-50933-ADMIN",
+        "description": "租户侧组，只用于平台 Controller 同步 workspace 成员"
+      }
+    ]
+  },
+  "users": [
+    {
+      "username": "alice",
+      "enabled": true,
+      "firstName": "Alice",
+      "lastName": "TenantA",
+      "email": "alice@aisanbox.example",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "poc3pass",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "os-user",
+        "tenant-a-users"
+      ],
+      "requiredActions": []
+    },
+    {
+      "username": "bob",
+      "enabled": true,
+      "firstName": "Bob",
+      "lastName": "TenantB",
+      "email": "bob@aisanbox.example",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "poc3pass",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "os-user",
+        "tenant-b-users"
+      ],
+      "requiredActions": []
+    },
+    {
+      "username": "tadmin",
+      "enabled": true,
+      "firstName": "TAdmin",
+      "lastName": "Platform",
+      "email": "tadmin@aisanbox.example",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "poc3pass",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "os-user",
+        "os-admin",
+        "tenant-a-users"
+      ],
+      "requiredActions": []
+    },
+    {
+      "username": "u50933",
+      "enabled": true,
+      "firstName": "u50933",
+      "lastName": "poc",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "poc3pass",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "os-user",
+        "T-50933-USER"
+      ],
+      "requiredActions": [],
+      "email": "u50933@aisanbox.example",
+      "emailVerified": true
+    },
+    {
+      "username": "a50933",
+      "enabled": true,
+      "firstName": "a50933",
+      "lastName": "poc",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "poc3pass",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "os-user",
+        "T-50933-ADMIN"
+      ],
+      "requiredActions": [],
+      "email": "a50933@aisanbox.example",
+      "emailVerified": true
+    },
+    {
+      "username": "p50933",
+      "enabled": true,
+      "firstName": "No",
+      "lastName": "Role",
+      "email": "p50933@aisanbox.example",
+      "emailVerified": true,
+      "requiredActions": [],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "poc3pass",
+          "temporary": false
+        }
+      ],
+      "realmRoles": []
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "openshell-cli",
+      "name": "OpenShell CLI / Gateway",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "redirectUris": [
+        "http://127.0.0.1:*"
+      ],
+      "webOrigins": [
+        "http://127.0.0.1:*"
+      ],
+      "attributes": {
+        "oauth2.device.authorization.grant.enabled": "true",
+        "use.refresh.tokens": "true"
+      },
+      "protocolMappers": [
+        {
+          "name": "op-groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "config": {
+            "claim.name": "groups",
+            "multivalued": "true",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "true"
+          }
+        },
+        {
+          "name": "op-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "openshell-cli",
+            "id.token.claim": "true",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "op-sub-from-username",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "config": {
+            "user.attribute": "username",
+            "claim.name": "sub",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ]
+}

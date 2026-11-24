@@ -1,0 +1,8 @@
+# 负例：0.1.7 下两种发现机制同时配置 → gateway 启动失败（不是"任选其一"的软建议）。
+# 常见触发方式其实更隐蔽：先 upgrade 成 file 模式，再 upgrade 成 label 模式，
+# helm 深合并会把 operator_namespace_file 留在 release values 里。
+gatewayConfig:
+  openshell.drivers.kubernetes:
+    workspace_mode: operator
+    operator_namespace_label: "openshell.ai/workspace=true"
+    operator_namespace_file: /etc/openshell/workspaces/namespaces.json

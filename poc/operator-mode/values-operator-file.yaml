@@ -1,0 +1,16 @@
+# 发现机制 B：JSON allowlist（文件热加载）。与 values-operator.yaml 二选一——
+# 0.1.7 里两个同时配会启动失败，所以另一条置 null（见 values-operator.yaml 注释）。
+gatewayConfig:
+  openshell.drivers.kubernetes:
+    workspace_mode: operator
+    operator_namespace_label: null
+    operator_namespace_file: /etc/openshell/workspaces/namespaces.json
+server:
+  extraVolumes:
+    - name: operator-namespaces
+      configMap:
+        name: openshell-workspace-namespaces
+  extraVolumeMounts:
+    - name: operator-namespaces
+      mountPath: /etc/openshell/workspaces
+      readOnly: true

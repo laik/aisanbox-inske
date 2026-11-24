@@ -1,0 +1,20 @@
+# Gateway overlay: workspace_mode=operator, 用 label selector 发现租户 runtime namespace。
+# 应用方式（保留现网其它 values）：
+#   helm get values openshell -n openshell -o yaml > /tmp/user-values.yaml
+#   helm upgrade openshell oci://…/helm-chart --version 0.1.7 -n openshell \
+#     -f /tmp/user-values.yaml -f values-operator.yaml
+#
+# 实测坑（0.1.7）：helm 的 -f 是深合并，上一次 upgrade 留下的 operator_namespace_file 会留下来；
+# 两个发现机制同时配置时 gateway 直接启动失败：
+#   "operator workspace mode requires exactly one of operator_namespace_label or operator_namespace_file, not both"
+# 所以这里必须把另一条显式置 null。
+gatewayConfig:
+  openshell.drivers.kubernetes:
+    workspace_mode: operator
+    operator_namespace_label: "openshell.ai/workspace=true"
+    operator_namespace_file: null
+# 清掉 JSON allowlist 那条路径留下的挂载（见 values-operator-file.yaml）。
+# 注意：这会清空该 release 的所有 extraVolumes；真实部署若要加别的卷，改这里。
+server:
+  extraVolumes: []
+  extraVolumeMounts: []

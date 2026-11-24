@@ -1,0 +1,68 @@
+# vault-csi-provider（HashiCorp 官方 CSI provider）作为独立 DaemonSet 跑在节点上。
+# 它不需要是 sidecar：driver 按 --provider-volume 目录里的 <provider>.sock 发现 provider
+# （实测 v1.6.2：只认 vault.sock；provider-vault.sock 会报 `provider not found`）。
+# 所以把该 hostPath 挂进来、socket 写进去即可。
+# POC 用 VAULT_TOKEN（root）直连 vault-demo 的 ClusterIP：
+#   - OpenShell workload Pod 没有 SA token（capability-free isolation），provider 默认的
+#     Kubernetes auth（用 Pod 的投影 SA token）在沙箱里拿不到身份 —— 见 README C3。
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: secrets-store
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: vault-csi-provider
+  namespace: secrets-store
+spec:
+  selector:
+    matchLabels: { app: vault-csi-provider }
+  template:
+    metadata:
+      labels: { app: vault-csi-provider }
+    spec:
+      hostNetwork: true
+      # vm01 是 control-plane（NoSchedule），不加 toleration 就只有 worker 节点上有 provider
+      tolerations: [{ operator: Exists }]
+      containers:
+        - name: provider
+          image: hashicorp/vault-csi-provider:1.7.4
+          command: ["/bin/vault-csi-provider"]
+          args:
+            - -endpoint=/provider-host-vault/vault.sock
+            - -log-level=debug
+          env:
+            - name: VAULT_TOKEN
+              value: root
+          volumeMounts:
+            - name: provider-socket
+              mountPath: /provider-host-vault
+          readinessProbe:
+            httpGet: { path: /health/ready, port: 8080 }
+      volumes:
+        - name: provider-socket
+          hostPath:
+            path: /var/run/secrets-store-csi-providers
+            type: DirectoryOrCreate
+---
+# provider 需要一个 Kubernetes Secret 存 HMAC key（给挂载出的 secret 算版本号 / 轮转检测）
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: vault-csi-provider-hmac
+  namespace: secrets-store
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, create, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: vault-csi-provider-hmac
+  namespace: secrets-store
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: vault-csi-provider-hmac }
+subjects: [{ kind: ServiceAccount, name: default, namespace: secrets-store }]

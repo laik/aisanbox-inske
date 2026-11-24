@@ -53,7 +53,11 @@
 | ✅ 跑通（POC3，第三轮） | **一套权限体系同时管住 K8s 与 OpenShell**：LDAP → Keycloak → 同一个 OIDC JWT → apiserver（OIDC + RBAC，按租户 ns）与一台 OIDC Gateway（两个 Workspace）。身份是目录 `entryUUID`，两侧读同一个 `groups` claim（§12） |
 | ✅ 跑通（POC3 补齐） | **多租户平台级网络隔离**：Capsule `networkPolicies` 已落到两个租户的 4 个 ns，跨租户普通 Pod `BLOCKED`、同租户正对照 `REACHED`（§5.4 已按实测更正）。⚠️ NetworkPolicy 可加性仍在（租户自建策略能放宽，见 §12.2 N-04） |
 | ✅ 跑通（POC4，第四轮） | **Gateway 改 Deployment + 外部 PostgreSQL**：两个独立 Helm release（p4a/p4b）共用一套 PG，控制面状态互通；同 release 2 副本 HA；sandbox 可见性走共享 runtime ns，不是 PG（§13） |
-| ❌ 未验证 | 观测后端的持久化与保留期（Jaeger 为内存存储）；目录变更到 token 的**自动**同步（Keycloak 26.4 无可用的 LDAP sync 端点，见 §12.4/§12.6-h）；多 Gateway 共库的**并发写**与 **KEK 解密失败路径**（§13.3） |
+| ✅ 跑通（POC5，第五轮） | **多租户 `operator` 模式**：一个 Gateway 服务 5 个平台预置 ns，Workspace 名恒等于 ns 名；运行时（CR/Pod/SA/Secret/4 条 NetworkPolicy）全部落在租户 ns；跨租户沙箱流量被 Antrea 丢弃；ns 生命周期不在 OpenShell 手里（§14） |
+| ⚠️ 已知坑(POC5) | 1Workspace 名(=租户 ns 名)上限 **19 字符** + DNS-1123;2`operator_namespace_label` 与 `operator_namespace_file` 在 0.1.7 **互斥**,同时配 Gateway 起不来(helm 深合并会留下旧的那条,要显式置 null);3每个租户 ns **必须**装 `openshell-workspace`,缺它先撞 sandbox SA 不存在;4OpenShell 的策略只管沙箱 Pod,租户 ns 里普通 Pod 之间仍靠 Capsule/Antrea;5credential driver 挂了会把建沙箱报成"Vault ... denied the configured role"（§14.2） |
+| ✅ 跑通（POC5，OIDC 层） | **OIDC → Workspace → Namespace 权限模型**：租户 ns 名 = Workspace 名 = 沙箱落点；用户能否往某 ns 落 Pod 只看他是不是同名 workspace 的成员（加/移除成员即时生效）；`os-admin` = Platform Admin 可跳租户，Workspace Admin 只管自己那一个；K8s 侧没有任何用户身份（§14.4） |
+| ⚠️ 已知坑（POC5，OIDC 层） | ①开了 OIDC 后 mTLS 客户端证书不再当用户认证（`missing authorization header`）；②CLI 连自签证书 Gateway 少了 `OPENSHELL_GATEWAY_INSECURE=true` 就每次都 `connect error: transport error`；③access token 默认 300s，长脚本跑到一半就过期；④重签 issuer CA 但运行中的 nginx 不重读证书 → Gateway 侧只报 `OIDC discovery request failed`（§14.4） |
+| ❌ 未验证 | 观测后端的持久化与保留期（Jaeger 为内存存储）；目录变更到 token 的**自动**同步（Keycloak 26.4 无可用的 LDAP sync 端点，见 §12.4/§12.6-h）；多 Gateway 共库的**并发写**与 **KEK 解密失败路径**（§13.3）；把 Gateway 自己的 ns 当 runtime ns 用（§14.3） |
 
 **注意：** 第一轮的结论文档（operator 模式，Mac + 两个 kind 集群）已删除，只在 git 历史里保留。它的结论**不迁移**到
 shared 模式。第一轮的原始证据仍在 [`poc/docs/FINDINGS.md`](poc/docs/FINDINGS.md)。
@@ -1445,3 +1449,98 @@ GRPCRoute/Gateway HTTPS、OIDC 写入 TOML、连接池 10+4、Service 暴露 met
 但托管 PG、CNPG、cert-manager、External Secrets、NetworkPolicy、备份恢复、
 并发迁移与 HPA **都没有在本 POC 集群跑过**，逐条列在 `production/README.md` §12。
 这些是部署方案，不是已验证结论。
+
+---
+
+## 14. POC5（第五轮，2026-11-23）：多租户 `operator` 模式——一个 Gateway，Namespace 由平台掌管
+
+> 脚本与判定：[`poc/operator-mode/`](poc/operator-mode/)（`README.md` 是判定表 OP-01..OP-18，
+> `demo.sh` 端到端复现，`evidence-20261123T034137Z.md` 是原始输出）。
+> 环境换成了 `k8s-221`（192.168.5.221/222，K8s v1.37.2，Debian 12），组件基线 **OpenShell helm-chart 0.1.7**
+> （image `0.1.7-api-prefix`）、agent-sandbox controller、Antrea 唯一 CNI。这一轮的结论只对 0.1.7 负责。
+
+### 14.0 一句话结论
+
+**成立。** `workspace_mode: operator` + `operator_namespace_label` 让**一台** Gateway 服务多个租户 ns：
+Workspace 名恒等于 ns 名（没有映射表，也没有 override），每个租户 ns 里的运行时由
+`openshell-workspace` chart 提供，ns 的创建/删除完全在平台手里（Gateway SA `can-i create namespaces = no`）。
+两个租户同时各跑一个沙箱，控制面按 workspace 隔离、数据面 exec 跨 ns 正常、跨租户沙箱流量被 Antrea **丢弃**（不是只有 API 对象）。
+
+这条路线和 POC2 的 shared 模式（一租户一 Gateway）是两套东西，不要混用结论：
+**共享 Gateway 换来的是运维面收敛，代价是租户的爆炸半径从"一个 Gateway Pod"变成"一台 Gateway"**（§14.4）。
+
+### 14.1 配置要点（三条，别多写）
+
+```toml
+[openshell.drivers.kubernetes]
+workspace_mode = "operator"
+operator_namespace_label = "openshell.ai/workspace=true"   # 或 operator_namespace_file，二选一
+```
+
+- 每个允许清单里的 ns 都要 `helm install openshell-workspace`：它给的是 **sandbox ServiceAccount** +
+  `Role/RoleBinding`（沙箱 CR、pods、services、networkpolicies、`secrets create/delete`、events）+ 一条 SSH(2222) ingress NetworkPolicy。
+- chart 会自动把 Gateway 的 ClusterRole 扩成"集群范围读沙箱 + `namespaces get/list/watch`"，
+  同时**删掉** Gateway ns 里那份 namespace-scoped Role。`secrets` 权限**只**能从各租户 ns 的 Role 来 —— 这就是"必须装 chart"的取证方式（OP-05）。
+- JSON 清单走 chart 的 `server.extraVolumes` / `extraVolumeMounts` 挂 ConfigMap，改清单**不用重启** Gateway（OP-11，实测 4s 生效）。
+
+### 14.2 五个坑（都是实测，按踩到一次的代价排序）
+
+| # | 坑 | 现象原文 | 怎么避 |
+|---|---|---|---|
+| 1 | 发现机制二选一是**硬约束**，不是建议 | `configuration error: operator workspace mode requires exactly one of operator_namespace_label or operator_namespace_file, not both`（CrashLoopBackOff） | values 里把另一条显式 `null`；`--reuse-values` / `-f` 深合并会把上一种留下 |
+| 2 | 租户 ns 名 = Workspace 名，**上限 19 字符**且必须 DNS-1123 | `workspace name exceeds maximum length (22 > 19)` | Capsule/平台的租户 ns 命名规范按 ≤19、小写字母数字+连字符设计（下划线不行） |
+| 3 | 漏装 workspace chart 时，报错**不像** RBAC 问题 | `pods "os-supervisor-…" is forbidden: error looking up service account tenant-c-runtime/openshell-sandbox: serviceaccount not found (403)` | 把"装 chart"放进平台 Controller 的 ns 开通流程，别靠人记 |
+| 4 | 隔离只覆盖 OpenShell 自己的 Pod | 跨租户探 `os-boundary:5500` = **timeout（包被丢弃）**；同租户 ns 里两个普通 Pod 跨 ns = **Connection refused（可达）** | 租户级网络隔离仍由 Capsule/Antrea 出策略；OpenShell 的策略用 ns 内 `podSelector`，只管沙箱 |
+| 5 | credential driver 挂了会伪装成权限错误 | 所有 `sandbox create` 失败：`The caller does not have permission to execute the specified operation, message: "Vault Kubernetes auth denied the configured role"` —— 连没进 allowlist 的 workspace 也是这个错，说明它发生在 ns 路由之前 | 本环境的 Vault 是 `-dev` 内存存储，Pod 重启即失忆；生产必须持久化实例，并把"credential driver 可用"列进 Gateway 就绪检查 |
+
+另外两条运维 GC：失败/删除后的沙箱会在租户 ns 留下 `openshell-sandbox-supervisors` / `-workloads` 两条 ns 级
+NetworkPolicy（无 ownerRef，OP-15）；`workspace delete` 不会回收 ns 里的 K8s 资源——有沙箱时它直接以
+`workspace '…' still contains resources: sandbox, sandbox policy` 拒绝，或进入 `Terminating` 而沙箱仍在跑（OP-18）。
+清理顺序必须是 **先删沙箱，再删 workspace**，ns 本身任何时候都不动。
+
+### 14.3 本轮没验的
+
+- 把 Gateway 自己的 ns 也当 runtime ns 用（operator 模式下那份 Role 被 chart 删掉了，理论上要在该 ns 也装 workspace chart）。
+- `sandbox create` 走 OIDC 用户而非 mTLS 客户端证书时的完整链路 —— 见下一节。
+- 多个租户 ns 的**配额/资源隔离**:`resource_admission` 只管资源对象准入,租户配额要靠 Capsule 的 ResourceQuota,本轮没做跨租户挤压测试。
+
+### 14.4 OIDC → Workspace → Namespace（已跑通，O-01…O-10）
+
+脚本与判定：`poc/operator-mode/90-oidc-ns-workspace.sh`、`poc/operator-mode/README.md` §7、
+`evidence-20261123T080350Z.md`。身份面是本轮在 `identity` ns 里起的 Keycloak 26（nginx 终止 TLS，NodePort 31443，自签 CA），
+realm 的 claim 形状与 POC3 一致（`groups` / `sub` / `aud`）；登录走产品自己的 device flow（复用 POC3 的 `lib-cli-login.sh`）。
+
+**对应关系就是一条恒等式**：租户 ns 名 = Workspace 名 = 沙箱落点。“某个用户能不能往某个 ns 落 Pod”
+= “该用户是不是同名 workspace 的成员”。没有映射表、没有 override、IdP 组名不参与。
+
+判定发生在三层，互不代理：
+
+| 层 | 它管什么 | 实测证据 |
+|---|---|---|
+| OIDC（Gateway 配置） | token 里的 role：`roles_claim=groups`、`user_role=os-user`（普通操作）、`admin_role=os-admin`（Platform Admin）、`audience=openshell-cli` | 带 `os-admin` 的身份能列全部 workspace，并能往自己**不是成员**的租户 ns 建沙箱（O-05） |
+| Workspace 成员 | 每个 workspace 独立存 `user` / `admin`，绑定 token 的 `sub` | 非成员建/列都被拒；加成员立即可用、移除立即失效（O-02/04/06）；`user` 不能加成员，Workspace Admin 只管自己那一个（O-09/10） |
+| K8s RBAC | 完全不参与用户授权 | 租户 ns 的 RoleBinding subject 只有 ServiceAccount；`kubectl auth can-i --as=alice --as-group=tenant-a-users` = no（O-08） |
+
+平台上要做的三件事（这轮配置就是这套）：
+
+1. IdP 只发两种角色组：`os-user`（可能用沙箱的人）、`os-admin`（平台运维，少数）。租户成员用另一套组（`tenant-a-users`），它们对 OpenShell 无效。
+2. 平台 Controller 把 `tenant-X-users` 同步成 workspace `tenant-X-runtime` 的成员（`member add --subject <稳定的 sub> --role user`）；
+   组员离开时必须 `member remove`，否则权限滞留。CLI 没有 `member update`，改角色只能 remove+add。
+3. `sub` 用不可复用的稳定 ID；`aud` 必须等于 Gateway 的 `audience`。
+
+**角色不会随系统增长**（实测第二轮 `evidence-20261123T102308Z.md`，`90-*.sh` 第 60 步）：接一个新租户 T-50933 时，
+Gateway 的 OIDC 配置一个字节都没改，OpenShell 的角色一个都没加；IdP 侧只多两个组（`T-50933-USER`/`T-50933-ADMIN`），
+平台 Controller 多一条同步规则 `T-<id>-* → workspace t-<id> 成员`。带 `T-50933-USER` 但不是成员仍被拒（`not a member of workspace 't-50933'`）；
+`a50933` 被同步成 `admin` 后只能管 `t-50933`，碰不到别的 workspace —— **租户管理员不是 `os-admin`**。
+具体步骤写在了 `poc/operator-mode/README.md` §8。
+
+这轮新增的 4 个坑（原始输出见 evidence §2）：
+
+| # | 坑 | 现象原文 |
+|---|---|---|
+| 1 | 开 OIDC 后 mTLS 客户端证书不再当用户认证 | `openshell -g <mTLS profile> workspace list` → `missing authorization header`；管理动作也得用一个带 `os-admin` 的 OIDC 身份 |
+| 2 | CLI 连自签证书 Gateway 少了 `OPENSHELL_GATEWAY_INSECURE=true` | 每次调用都是 `connect error: transport error`，看起来像网络故障 |
+| 3 | access token 默认 300s | 矩阵跑到一半 `cached OIDC token has expired; run 'openshell gateway login …'`（realm 里 `accessTokenLifespan: 1800` 解决） |
+| 4 | 每轮重签 issuer CA/证书，运行中的 nginx 不重读 | nginx 侧 `upstream SSL certificate verify error: (7:certificate signature failure)`，Gateway 侧只报 `OIDC discovery request failed` |
+| 5 | ConfigMap 用 delete+create 更新，运行中的 Pod 就不再同步这个挂载 | Keycloak import 的还是上一版 `realm.json`，看着像“realm 改了不生效/新用户 user_not_found”；改成 `create --dry-run=client -o yaml \| kubectl apply -f -` 原地更新，并断言 Pod 里挂的文件哈希等于本地 |
+| 6 | Keycloak 的 realm JSON 不是所有字段都吃 `--import-realm` | `defaultRoles` 无效（还会让 import 停在 roles 中段）、组的 `subGroups` 不会被创建；新用户缺 `email`/`requiredActions` 时密码授权报 `invalid_grant: Account is not fully set up`（不像密码错） |

@@ -1,0 +1,77 @@
+# Vault → CSI → **PVC**（OpenShell 唯一放行的卷类型）。
+# secrets-store 的原生用法是 inline `csi` 卷，OpenShell 的 driver-config 只有 persistent_volume_claim，
+# 所以这里把 provider 包在「静态 CSI PV + 静态绑定的 PVC」里。
+# PVC 必须带 gateway resource admission 要求的两个批准标签（默认策略）：
+#   openshell.ai/sandbox-attachable=true + openshell.ai/sandbox-attachable-workspace=<workspace>
+# PV 是集群级对象，不参与 required_labels（admission 只看 PVC）。
+apiVersion: secrets-store.csi.x-k8s.io/v1
+kind: SecretProviderClass
+metadata:
+  name: vault-sandbox
+  namespace: tenant-a-runtime
+spec:
+  provider: vault
+  parameters:
+    vaultAddress: "http://10.103.125.108:8200"
+    roleName: "poc-sandbox"
+    objects: |
+      - objectName: "database-url"
+        secretPath: "secret/data/csi/db"
+        secretKey: "url"
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: vault-csi-pv-poc
+spec:
+  capacity:
+    storage: 1Mi
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  claimRef:
+    namespace: tenant-a-runtime
+    name: vault-csi-pvc
+  csi:
+    driver: secrets-store.csi.k8s.io
+    volumeHandle: vault-csi-poc-ctl
+    readOnly: true
+    volumeAttributes:
+      secretProviderClass: vault-sandbox
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vault-csi-pvc
+  namespace: tenant-a-runtime
+  labels:
+    openshell.ai/sandbox-attachable: "true"
+    openshell.ai/sandbox-attachable-workspace: tenant-a-runtime
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: ""
+  volumeName: vault-csi-pv-poc
+  resources:
+    requests:
+      storage: 1Mi
+---
+# 对照：普通 Pod 用同一个 PVC（不经 OpenShell）。
+apiVersion: v1
+kind: Pod
+metadata:
+  name: csi-pvc-ctl
+  namespace: tenant-a-runtime
+spec:
+  containers:
+    - name: agent
+      image: busybox:1.37
+      command: ["sh", "-c", "sleep 3600"]
+      volumeMounts:
+        - name: vault
+          mountPath: /etc/vault-secrets
+          readOnly: true
+  volumes:
+    - name: vault
+      persistentVolumeClaim:
+        claimName: vault-csi-pvc
+        readOnly: true

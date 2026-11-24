@@ -1,0 +1,39 @@
+# 正向对照：普通 Pod（不带 OpenShell 边界）用 inline CSI 卷 + vault provider 取 Vault 密钥。
+# 目的：先证明 CSI + Vault 这一层在集群里本身是通的，OpenShell 侧的失败才只归因于 OpenShell。
+# vaultAddress 用 ClusterIP：provider 是 hostNetwork，节点上解析不了 cluster.local。
+apiVersion: secrets-store.csi.x-k8s.io/v1
+kind: SecretProviderClass
+metadata:
+  name: vault-ctl
+  namespace: default
+spec:
+  provider: vault
+  parameters:
+    vaultAddress: "http://10.103.125.108:8200"
+    roleName: "poc-ctl"
+    objects: |
+      - objectName: "database-url"
+        secretPath: "secret/data/csi/db"
+        secretKey: "url"
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: csi-ctl
+  namespace: default
+spec:
+  containers:
+    - name: agent
+      image: busybox:1.37
+      command: ["sh", "-c", "sleep 3600"]
+      volumeMounts:
+        - name: vault
+          mountPath: /mnt/secrets-store
+          readOnly: true
+  volumes:
+    - name: vault
+      csi:
+        driver: secrets-store.csi.k8s.io
+        readOnly: true
+        volumeAttributes:
+          secretProviderClass: vault-ctl

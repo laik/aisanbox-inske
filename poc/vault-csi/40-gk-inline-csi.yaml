@@ -1,0 +1,55 @@
+# 路径 B：不经 OpenShell API，由 Gatekeeper 在 **Pod 准入时**给 sandbox workload Pod 补一个
+# inline `csi` 卷（secrets-store 的原生用法，Ephemeral 模式，不用改 CSIDriver）。
+# OpenShell 的 resource admission 只对它自己生成的 Sandbox CR 做闭集清点
+# （crates/openshell-driver-kubernetes/src/resource_admission.rs 注释：
+#  "Kubernetes control-plane mutations of the eventual live Pod are outside the
+#   workspace-user authorization boundary and are not inventoried here"），
+# 所以 Pod 级注入不会被 gateway 拒绝。
+apiVersion: mutations.gatekeeper.sh/v1
+kind: Assign
+metadata:
+  name: csi-volume-vault-inline
+spec:
+  applyTo:
+    - groups: [""]
+      kinds: ["Pod"]
+      versions: ["v1"]
+  match:
+    scope: Namespaced
+    kinds: [{ apiGroups: [""], kinds: ["Pod"] }]
+    namespaces: ["tenant-a-runtime"]
+    labelSelector:
+      matchLabels: { openshell.ai/boundary-role: workload }
+  location: "spec.volumes[name:vault-inline]"
+  parameters:
+    assign:
+      value:
+        name: vault-inline
+        csi:
+          driver: secrets-store.csi.k8s.io
+          readOnly: true
+          volumeAttributes:
+            secretProviderClass: vault-sandbox
+---
+apiVersion: mutations.gatekeeper.sh/v1
+kind: Assign
+metadata:
+  name: csi-mount-vault-inline
+spec:
+  applyTo:
+    - groups: [""]
+      kinds: ["Pod"]
+      versions: ["v1"]
+  match:
+    scope: Namespaced
+    kinds: [{ apiGroups: [""], kinds: ["Pod"] }]
+    namespaces: ["tenant-a-runtime"]
+    labelSelector:
+      matchLabels: { openshell.ai/boundary-role: workload }
+  location: "spec.containers[name:agent].volumeMounts[name:vault-inline]"
+  parameters:
+    assign:
+      value:
+        name: vault-inline
+        mountPath: /etc/vault-inline
+        readOnly: true

@@ -1,0 +1,121 @@
+# POC5-2 —— OIDC 提供商（Keycloak + nginx 终止 TLS），面向 k8s-221。
+# 这是 poc/identity/20-keycloak.yaml 的最小改写，三处不同都是这台集群逼出来的（实测）：
+#   1) issuer_url 用本集群节点 IP（NodePort 31443）；
+#   2) 不接 LDAP：这台集群**到不了 docker.io**（osixia/openldap 与 library/nginx 全部
+#      `connection reset by peer`），realm 改由 `--import-realm` 从 kc-realm-op.json 导入。
+#      claim 名与形状与 POC3 完全一致（顶层 groups / aud=openshell-cli / sub=username）；
+#      "目录→同一个 claim" 那条链已由 POC3 §12 证过，本轮不重复。
+#   3) tls sidecar 用节点上已缓存的 nginx:1.27-alpine（docker.io 不可达时只有缓存可用）。
+# 代价（照抄 POC3 的说明）：dev-file 库在容器可写层，Pod 重建 = 本地用户重建；
+# 因为 sub 由 username 映射而来，重建后 subject 不变，workspace 成员绑定不会漂。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kc-config
+  namespace: identity
+data:
+  issuer_url: "https://192.168.5.221:31443"   # 唯一出处：Keycloak/CLI/Gateway 三边都读这里
+  realm: "aisanbox"
+  client_id: "openshell-cli"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-nginx
+  namespace: identity
+data:
+  nginx.conf: |
+    worker_processes 1;
+    error_log /dev/stderr warn;
+    pid /tmp/nginx.pid;
+    events { worker_connections 512; }
+    http {
+      access_log /dev/stdout;
+      client_body_temp_path /tmp; proxy_temp_path /tmp; fastcgi_temp_path /tmp;
+      upstream kc { server 127.0.0.1:8080; }
+      server {
+        listen 8443 ssl;
+        ssl_certificate     /etc/tls/tls.crt;
+        ssl_certificate_key /etc/tls/tls.key;
+        location / {
+          proxy_pass http://kc;
+          proxy_set_header Host $host;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto https;
+          proxy_set_header X-Forwarded-Host $host;
+          proxy_set_header X-Forwarded-Port 31443;
+        }
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+  namespace: identity
+  labels: {app: keycloak}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: keycloak}}
+  template:
+    metadata: {labels: {app: keycloak}}
+    spec:
+      containers:
+        - name: keycloak
+          image: quay.io/keycloak/keycloak:26.4
+          args: ["start", "--db=dev-file", "--import-realm"]
+          env:
+            - {name: KC_HOSTNAME, valueFrom: {configMapKeyRef: {name: kc-config, key: issuer_url}}}
+            - {name: KC_HTTP_ENABLED, value: "true"}
+            - {name: KC_PROXY_HEADERS, value: "xforwarded"}
+            - {name: KC_BOOTSTRAP_ADMIN_USERNAME, value: "pocadmin"}
+            - {name: KC_BOOTSTRAP_ADMIN_PASSWORD, value: "pocadminpass"}
+            - {name: KC_HEALTH_ENABLED, value: "true"}
+            # 实测：1536Mi limit 下 Keycloak 26.4 第一次启动就被 OOMKilled（exit 1, oom=true）。
+            # 显式设堆上限并抬高 limit，避免"pod 反复重启 = 像是配置错误"的假象。
+            - {name: JAVA_OPTS, value: "-Xms256m -Xmx1024m -XX:MaxMetaspaceSize=256m"}
+          ports: [{name: http, containerPort: 8080}]
+          volumeMounts:
+            - {name: realm-import, mountPath: /opt/keycloak/data/import, readOnly: true}
+          readinessProbe:
+            httpGet: {path: /realms/master/.well-known/openid-configuration, port: 8080}
+            initialDelaySeconds: 60
+            periodSeconds: 10
+          resources:
+            requests: {cpu: 500m, memory: 1536Mi}
+            limits: {cpu: "2", memory: 3Gi}
+        - name: tls
+          image: nginx:1.27-alpine
+          command: ["nginx", "-g", "daemon off;", "-c", "/etc/nginx/nginx.conf"]
+          ports: [{name: https, containerPort: 8443}]
+          volumeMounts:
+            - {name: nginx-cfg, mountPath: /etc/nginx/nginx.conf, subPath: nginx.conf, readOnly: true}
+            - {name: issuer-tls, mountPath: /etc/tls, readOnly: true}
+          readinessProbe: {tcpSocket: {port: 8443}, periodSeconds: 5}
+          resources:
+            requests: {cpu: 20m, memory: 32Mi}
+            limits: {cpu: 200m, memory: 128Mi}
+      volumes:
+        - name: nginx-cfg
+          configMap: {name: keycloak-nginx}
+        - name: issuer-tls
+          secret: {secretName: issuer-tls}
+        - name: realm-import
+          configMap: {name: kc-realm-op}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: keycloak, namespace: identity, labels: {app: keycloak}}
+spec:
+  type: NodePort
+  selector: {app: keycloak}
+  ports: [{name: https, port: 8443, targetPort: 8443, nodePort: 31443}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: keycloak-admin, namespace: identity, labels: {app: keycloak}}
+spec:
+  type: ClusterIP
+  selector: {app: keycloak}
+  ports: [{name: http, port: 8080, targetPort: 8080}]

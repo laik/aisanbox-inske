@@ -1,0 +1,19 @@
+# C9：CSI 挂进来的内容同样受 sandbox policy 路径闸门管，加一条 read_only 路径即可放行。
+# 基线（policy get --base 实测）里没有 /vault/secrets；/etc 在基线里，所以 C1/C3 直接可读。
+version: 1
+filesystem_policy:
+  include_workdir: true
+  read_only:
+    - /bin
+    - /usr
+    - /lib
+    - /proc
+    - /dev/urandom
+    - /etc
+    - /var/log
+    - /vault/secrets
+  read_write:
+    - /tmp
+    - /dev/null
+landlock:
+  compatibility: best_effort

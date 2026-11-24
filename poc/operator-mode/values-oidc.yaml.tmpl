@@ -1,0 +1,12 @@
+# 打开 Gateway 的 OIDC 认证（roles claim / admin+user role），mTLS 保持可用。
+# issuer 由 90 号脚本从 identity/kc-config 读出来填进这里（不要硬编码）。
+server:
+  oidc:
+    issuer: "__ISSUER__"
+    audience: "openshell-cli"          # chart 默认值，写出来而不是依赖默认
+    rolesClaim: "groups"               # Keycloak 侧把目录组映射到顶层 groups（POC3 同一条）
+    adminRole: "os-admin"
+    userRole: "os-user"
+    scopesClaim: ""
+    caConfigMapName: "oidc-issuer-ca"  # issuer 用自建 CA，不给就是 JWKS 拉取 TLS 失败
+    jwksTtl: 600
