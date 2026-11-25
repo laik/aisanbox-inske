@@ -1,0 +1,49 @@
+# 能不能把这份 Vault PVC 挂到 **supervisor**（边界侧、OpenShell 托管的那半边），而不是沙箱里？
+# OpenShell 没有给 supervisor 配卷的开关（config.rs 里 supervisor_* 只有 image/runtimeClass/otlp/topology），
+# 唯一可行是集群侧在 Pod 准入时补（和 poc/vault-csi/40 同一招，只是 label 换成 supervisor）。
+apiVersion: mutations.gatekeeper.sh/v1
+kind: Assign
+metadata:
+  name: pvc-volume-vault-supervisor
+spec:
+  applyTo:
+    - groups: [""]
+      kinds: ["Pod"]
+      versions: ["v1"]
+  match:
+    scope: Namespaced
+    kinds: [{ apiGroups: [""], kinds: ["Pod"] }]
+    namespaces: ["tenant-a-runtime"]
+    labelSelector:
+      matchLabels: { openshell.ai/boundary-role: supervisor }
+  location: "spec.volumes[name:vault-sv]"
+  parameters:
+    assign:
+      value:
+        name: vault-sv
+        persistentVolumeClaim:
+          claimName: vault-csi-pvc
+          readOnly: true
+---
+apiVersion: mutations.gatekeeper.sh/v1
+kind: Assign
+metadata:
+  name: pvc-mount-vault-supervisor
+spec:
+  applyTo:
+    - groups: [""]
+      kinds: ["Pod"]
+      versions: ["v1"]
+  match:
+    scope: Namespaced
+    kinds: [{ apiGroups: [""], kinds: ["Pod"] }]
+    namespaces: ["tenant-a-runtime"]
+    labelSelector:
+      matchLabels: { openshell.ai/boundary-role: supervisor }
+  location: "spec.containers[name:supervisor].volumeMounts[name:vault-sv]"
+  parameters:
+    assign:
+      value:
+        name: vault-sv
+        mountPath: /etc/vault-supervisor
+        readOnly: true

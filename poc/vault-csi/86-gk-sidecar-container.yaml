@@ -1,0 +1,21 @@
+# S2：不是 K8s 原生 sidecar，而是往 spec.containers 里再加一个普通容器（另一种常见"边车"写法）。
+apiVersion: mutations.gatekeeper.sh/v1
+kind: Assign
+metadata:
+  name: sidecar-cr-extra-container
+spec:
+  applyTo:
+    - groups: ["agents.x-k8s.io"]
+      kinds: ["Sandbox"]
+      versions: ["v1beta1"]
+  match:
+    scope: Namespaced
+    kinds: [{ apiGroups: ["agents.x-k8s.io"], kinds: ["Sandbox"] }]
+    namespaces: ["tenant-a-runtime"]
+  location: "spec.podTemplate.spec.containers[name:log-sidecar2]"
+  parameters:
+    assign:
+      value:
+        name: log-sidecar2
+        image: busybox:1.37
+        command: ["sh", "-c", "i=0; while true; do i=$((i+1)); echo sidecar2-alive-$i; sleep 5; done"]

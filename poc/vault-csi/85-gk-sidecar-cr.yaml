@@ -1,0 +1,27 @@
+# S1：能不能给沙箱加 sidecar 容器？先试 **CR 级**注入 K8s 原生 sidecar
+# （initContainers + restartPolicy: Always，1.28+ 语义，K8s 1.37 里是 GA 行为）。
+# 如果 gateway/CRD 接受，Pod 里就会多一个常驻容器。
+apiVersion: mutations.gatekeeper.sh/v1
+kind: Assign
+metadata:
+  name: sidecar-cr-logtail
+spec:
+  applyTo:
+    - groups: ["agents.x-k8s.io"]
+      kinds: ["Sandbox"]
+      versions: ["v1beta1"]
+  match:
+    scope: Namespaced
+    kinds: [{ apiGroups: ["agents.x-k8s.io"], kinds: ["Sandbox"] }]
+    namespaces: ["tenant-a-runtime"]
+  location: "spec.podTemplate.spec.initContainers[name:log-sidecar]"
+  parameters:
+    assign:
+      value:
+        name: log-sidecar
+        image: busybox:1.37
+        command: ["sh", "-c", "i=0; while true; do i=$((i+1)); echo sidecar-alive-$i; sleep 5; done"]
+        restartPolicy: Always
+        securityContext:
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false

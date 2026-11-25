@@ -1,0 +1,19 @@
+# 出站要真的注入凭据，必须有 credential_binding 到该 provider（poc 根目录 vault.md 的写法）。
+# 这是完整 policy（--policy 会替换基线），所以文件权限基线也要带上。
+version: 1
+filesystem_policy:
+  include_workdir: true
+  read_only: [/bin, /usr, /lib, /proc, /dev/urandom, /etc, /var/log]
+  read_write: [/tmp, /dev/null]
+landlock:
+  compatibility: best_effort
+network_policies:
+  dbprobe:
+    endpoints:
+      - host: echo-srv.tenant-a-runtime.svc
+        port: 8080
+        protocol: rest
+        enforcement: enforce
+        access: full
+        credential_binding: { provider: dburl }
+    binaries: [{ path: /usr/bin/wget }]

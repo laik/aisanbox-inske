@@ -40,6 +40,25 @@
 | C10 | `policy set` + `sandbox stop/start` | ✅ 重启后策略生效，CSI PVC 自动重新挂上 | evidence 续测 |
 | C6 | csi 卷出现在 **Sandbox CR**（CR 级 Assign） | ❌ `workload contains an unsupported external resource attachment`，沙箱没建出来 | `50-gk-cr-csi.yaml` |
 | C7 | 沙箱内有没有 Vault token / SA token | ✅ `env | grep -ic vault` = 0；workload Pod 无投影 SA token（同 poc/vault E14） | evidence |
+| C11 | 把这份 Vault PVC 挂到 **supervisor** Pod | ⚠️ 能挂，但没有产品开关（`config.rs` 里 `supervisor_*` 只有 image / runtimeClass / otlp / topology），只能集群侧在 Pod 准入时补；supervisor 仍 Ready/0 重启，文件真实落盘（节点上 `…/kubernetes.io~csi/vault-csi-pv-poc/mount/database-url` 读到），轮转也会更新（~70s，比 workload 慢） | `70-gk-supervisor-pvc.yaml` |
+| C12 | “挂给 supervisor 后由 provider 机制提供给沙箱” | ❌ 不成立：provider 的凭据值**不从任何文件读**；真源是 gateway credential store（本环境就是 Vault：`secret/openshell/provider-credentials/`），只能经 API 写入 | `80-profile-dburl.yaml` `81-policy-provider.yaml` |
+| C13 | provider 平面本身（对照） | ✅ profile + provider + policy `credential_binding` → 沙箱里 `DB_URL=openshell:resolve:env:v1…_DB_URL`（占位符，不是真值）；出站替换那一步未跑完：沙箱解析不了 `echo-srv.tenant-a-runtime.svc`（DNS） | evidence |
+
+**C11/C12 的结论**：想让真值不进沙箱，就直接用 provider 平面（它的存储本来就是这个 Vault，`provider create/update` 写入，沙箱只拿占位符，真值在 supervisor/代理处替换）；
+想要文件形态，就挂给 workload 容器（路 A/B）。挂给 supervisor 技术上可行，但**没有任何组件会去读那份文件**：
+provider 的值只来自 API 写入的 credential store（`--credential KEY` 从 CLI 环境取值、`--runtime-credentials`、
+以及 proto 里的 `REFRESH_STRATEGY_EXTERNAL` = “外部更新器经 API 更新值”）。要做“Vault → provider”的同步器，
+它直接读 Vault 就行，不需要 CSI/PVC。
+| C14 | OpenShell 有没有“给沙箱加 sidecar 容器”的开关 | ❌ 没有：driver-config 的 `containers` 只有 `agent`；OpenShell 自己的第二组件是**独立 Pod（supervisor）**，不是同 Pod 边车 | 源码 `KubernetesDriverContainersConfig` |
+| C15 | K8s 原生 sidecar（initContainers + `restartPolicy: Always`）注到 Sandbox CR | ⚠️ gateway 接受，Pod 2/2 Running，边车正常输出（不像 csi 卷那样被拒：容器不在闭集清点里） | `85-gk-sidecar-cr.yaml` |
+| C16 | 往 `spec.containers` 加普通第二容器 | ⚠️ 同样接受，2/2 Running | `86-gk-sidecar-container.yaml` |
+| C17 | OpenShell 会把注入的容器清掉吗 | ❌ 不会：删掉 Assign 后 `stop`/`start` 仍保留（它只管自己那几个 bootstrap/init 容器） | evidence |
+| C18 | 边车在不在 sandbox policy 边界内 | ❌ 不在：不受 Landlock / L7 代理 / 凭据替换管；网络只受 ns 级 NetworkPolicy 约束（实测 DNS 与 egress 都被拒，基本没网）；也没有 SA token（pod 级 `automountServiceAccountToken=false`） | evidence |
+
+**C14–C18 的结论**：OpenShell 不提供“沙箱边车”这个能力（它的边车就是 supervisor，固定实现）；
+K8s 层面能塞进去（需集群侧 webhook 或自己改 CR），OpenShell 也不拦、不删——但那个容器在隔离模型**之外**：
+文件/出站/凭据策略全不适用，网络还得自己加 NetworkPolicy/DNS 才能用。
+所以“想加自己的边车”要么当成平台侧基础设施（自己保证它的安全属性），要么换成 supervisor 之外的另一个 OpenShell 沙箱。
 
 源码依据（本地 `v0.1.10-pre.3`，与 0.1.7 行为一致）：
 `crates/openshell-driver-kubernetes/src/driver.rs` 的 `KubernetesDriverVolumeConfig` 只有
@@ -73,6 +92,9 @@ secrets-store.csi.k8s.io（DS，每节点）
 | `40-gk-inline-csi.yaml` | 路 B：给 workload Pod 补 inline csi 卷 + 挂载 |
 | `50-gk-cr-csi.yaml` | C6 反向对照：CR 级注入（跑完就删，留着会挡住所有建沙箱） |
 | `60-policy-vault-path.yaml` | 基线 + `/vault/secrets` 只读（C9/C10 用） |
+| `70-gk-supervisor-pvc.yaml` | C11：把同一份 PVC 挂到 supervisor Pod（label `boundary-role=supervisor`） |
+| `80-profile-dburl.yaml` `81-policy-provider.yaml` | C12/C13：provider 平面的 profile + `credential_binding` policy |
+| `85-gk-sidecar-cr.yaml` `86-gk-sidecar-container.yaml` | C15/C16：往 Sandbox CR 注入 K8s 原生 sidecar / 普通第二容器（跑完可 `kubectl delete assign …`） |
 | `evidence-20261123T140115Z.md` | 实跑原始输出 |
 
 ## 4. 复现

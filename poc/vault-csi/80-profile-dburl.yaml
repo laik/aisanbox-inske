@@ -1,0 +1,10 @@
+# provider 平面的 profile（形状描述：凭据怎么放进请求）。值不在这里，在 provider create。
+id: dburl
+display_name: DB credential probe
+category: other
+credentials:
+  - name: db_url
+    env_vars: [DB_URL]
+    auth_style: bearer
+    header_name: authorization
+endpoints: []

@@ -1,0 +1,15 @@
+# 占位 CRD：Substrate 的非 kind 安装会 apply GKE 的 PodMonitoring；本集群没有 GKE 监控 operator，
+# 没有这个 CRD 安装就中断。建个空 schema 的占位，资源能 apply 且没有任何效果。
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: podmonitorings.monitoring.googleapis.com
+spec:
+  group: monitoring.googleapis.com
+  names: {kind: PodMonitoring, listKind: PodMonitoringList, plural: podmonitorings, singular: podmonitoring}
+  scope: Namespaced
+  versions:
+  - name: v1
+    served: true
+    storage: true
+    schema: {openAPIV3Schema: {type: object, x-kubernetes-preserve-unknown-fields: true}}

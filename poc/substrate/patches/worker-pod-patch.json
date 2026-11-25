@@ -1,0 +1,5 @@
+{"spec":{"template":{"spec":{
+  "securityContext":{"sysctls":[{"name":"net.ipv4.ip_unprivileged_port_start","value":"80"}]},
+  "volumes":[{"name":"ca","configMap":{"name":"poc-registry-ca"}}],
+  "containers":[{"name":"worker","volumeMounts":[{"name":"ca","mountPath":"/etc/ssl/certs/ca-certificates.crt","subPath":"ca-certificates.crt","readOnly":true}]}]
+}}}}
